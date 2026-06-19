@@ -103,6 +103,7 @@ Map over companies. Per company: `resolve_board` (LLM + tool-use, cache result) 
 
 ## Conventions
 
+- Do not reference Linear ticket IDs (e.g. JAR-47) in commit messages.
 - Python 3.12+, full type hints, Pydantic for all extraction schemas and the unified `Posting` model.
 - Ingestion modules must be **pure and independently testable** — pass in an HTTP client, return data; no global state, no LLM imports.
 - One canonical `Posting` schema; every ATS adapter normalizes into it (fields present-but-null when the source omits them).
