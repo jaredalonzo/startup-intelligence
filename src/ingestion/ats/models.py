@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-ATSSource = Literal["greenhouse", "lever", "ashby"]
+ATSSource = Literal["greenhouse", "lever", "ashby", "workable"]
 
 
 class Posting(BaseModel):
