@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html as _html_module
 import re
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -14,11 +15,16 @@ class _StripHTMLParser(HTMLParser):
         self._chunks.append(data)
 
 
-def strip_html(html: str | None) -> str | None:
-    if not html:
+def strip_html(raw: str | None) -> str | None:
+    """Strip HTML tags from *raw*, unescaping entities first.
+
+    Greenhouse returns entity-encoded HTML (e.g. ``&lt;div&gt;``); calling
+    ``html.unescape`` before parsing ensures the tags are recognised.
+    """
+    if not raw:
         return None
     parser = _StripHTMLParser()
-    parser.feed(html)
+    parser.feed(_html_module.unescape(raw))
     text = re.sub(r"\s+", " ", "".join(parser._chunks)).strip()
     return text or None
 

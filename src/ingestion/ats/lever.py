@@ -43,7 +43,9 @@ def _normalize(company_slug: str, p: dict) -> Posting:
         compensation_max=None,
         compensation_currency=None,
         compensation_interval=None,
+        # Lever only exposes createdAt; use it as both timestamps.
+        # updatedAt is absent from the public posting API.
         posted_at=ms_to_dt(p.get("createdAt")),
-        updated_at=ms_to_dt(p.get("updatedAt")),
+        updated_at=ms_to_dt(p.get("updatedAt") or p.get("createdAt")),
         raw=p,
     )

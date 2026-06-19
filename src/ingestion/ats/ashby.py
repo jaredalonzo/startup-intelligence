@@ -27,34 +27,39 @@ async def fetch_postings(slug: str, client: httpx.AsyncClient) -> list[Posting]:
         _BASE.format(slug=slug), params={"includeCompensation": "true"}
     )
     resp.raise_for_status()
-    return [_normalize(slug, j) for j in resp.json().get("jobPostings", [])]
+    body = resp.json()
+    # API returns "jobPostings" or "jobs" depending on board configuration
+    postings = body.get("jobPostings") or body.get("jobs") or []
+    return [_normalize(slug, j) for j in postings]
 
 
 def _normalize(company_slug: str, j: dict) -> Posting:
     comp_entry = _primary_comp_entry(j.get("compensation"))
     raw_et = j.get("employmentType") or ""
+    # Ashby only exposes publishedAt; no separate updatedAt on the public API.
+    published = parse_dt(j.get("publishedAt") or j.get("publishedDate"))
     return Posting(
         id=j["id"],
         company_slug=company_slug,
         ats="ashby",
         title=j["title"],
-        url=j.get("jobUrl") or j.get("applicationLink") or j.get("externalLink"),
-        department=j.get("departmentName"),
-        team=j.get("teamName"),
-        location=j.get("locationName"),
+        url=j.get("jobUrl") or j.get("applyUrl") or j.get("externalLink"),
+        department=j.get("department") or j.get("departmentName"),
+        team=j.get("team") or j.get("teamName"),
+        location=j.get("location") or j.get("locationName"),
         remote=j.get("isRemote"),
         employment_type=_EMPLOYMENT_TYPE.get(raw_et, raw_et.lower() or None),
         seniority=None,
         description_html=j.get("descriptionHtml"),
-        description_text=strip_html(j.get("descriptionHtml")),
+        description_text=j.get("descriptionPlain") or strip_html(j.get("descriptionHtml")),
         compensation_min=_int_or_none(comp_entry, "minValue"),
         compensation_max=_int_or_none(comp_entry, "maxValue"),
         compensation_currency=comp_entry.get("currency") if comp_entry else None,
         compensation_interval=(comp_entry.get("payPeriod") or "").lower() or None
         if comp_entry
         else None,
-        posted_at=parse_dt(j.get("publishedDate")),
-        updated_at=parse_dt(j.get("updatedAt")),
+        posted_at=published,
+        updated_at=published,
         raw=j,
     )
 
