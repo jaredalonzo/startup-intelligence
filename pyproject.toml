@@ -12,6 +12,9 @@ dependencies = [
     "psycopg[binary]>=3.1",
     "psycopg-pool>=3.2",
     "python-dotenv>=1.0",
+    "langgraph>=0.2",
+    "langgraph-checkpoint-postgres>=2.0",
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]
