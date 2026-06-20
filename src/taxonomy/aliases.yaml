@@ -1,0 +1,208 @@
+# taxonomy/aliases.yaml
+#
+# Maps any variant spelling to its canonical form.
+# The set of right-hand values defines the known skill taxonomy.
+# Skills appearing in extractions that are neither a key nor a value here
+# are written to unknown_skills state for periodic review and back-fill.
+#
+# Convention: include canonical → canonical entries to register a skill as
+# "known" without needing a synonym. Add synonyms below the canonical entry.
+
+# ---------------------------------------------------------------------------
+# Languages
+# ---------------------------------------------------------------------------
+Python: Python
+Go: Go
+golang: Go
+Ruby: Ruby
+Java: Java
+Scala: Scala
+Kotlin: Kotlin
+Rust: Rust
+Swift: Swift
+PHP: PHP
+Elixir: Elixir
+
+TypeScript: TypeScript
+typescript: TypeScript
+TS: TypeScript
+
+JavaScript: JavaScript
+javascript: JavaScript
+JS: JavaScript
+
+"C++": "C++"
+"C#": "C#"
+csharp: "C#"
+"C# (.NET)": "C#"
+
+# ---------------------------------------------------------------------------
+# Web frameworks
+# ---------------------------------------------------------------------------
+React: React
+"React.js": React
+ReactJS: React
+reactjs: React
+
+"Next.js": "Next.js"
+NextJS: "Next.js"
+next: "Next.js"
+
+"Vue.js": "Vue.js"
+Vue: "Vue.js"
+VueJS: "Vue.js"
+
+Angular: Angular
+Svelte: Svelte
+Django: Django
+Flask: Flask
+FastAPI: FastAPI
+Rails: Rails
+"Ruby on Rails": Rails
+Express: Express
+"Express.js": Express
+
+"Node.js": "Node.js"
+nodejs: "Node.js"
+node: "Node.js"
+
+# ---------------------------------------------------------------------------
+# Databases
+# ---------------------------------------------------------------------------
+PostgreSQL: PostgreSQL
+postgres: PostgreSQL
+postgresql: PostgreSQL
+Postgres: PostgreSQL
+
+MySQL: MySQL
+SQLite: SQLite
+Redis: Redis
+MongoDB: MongoDB
+Cassandra: Cassandra
+DynamoDB: DynamoDB
+Elasticsearch: Elasticsearch
+Opensearch: Elasticsearch
+"Apache Kafka": "Apache Kafka"
+Kafka: "Apache Kafka"
+kafka: "Apache Kafka"
+Clickhouse: ClickHouse
+ClickHouse: ClickHouse
+BigQuery: BigQuery
+Redshift: Redshift
+Snowflake: Snowflake
+
+# ---------------------------------------------------------------------------
+# Cloud platforms (these go in platforms, not skills)
+# ---------------------------------------------------------------------------
+AWS: AWS
+"Amazon Web Services": AWS
+GCP: GCP
+"Google Cloud": GCP
+"Google Cloud Platform": GCP
+Azure: Azure
+"Microsoft Azure": Azure
+
+# ---------------------------------------------------------------------------
+# Infrastructure / DevOps
+# ---------------------------------------------------------------------------
+Kubernetes: Kubernetes
+k8s: Kubernetes
+kubernetes: Kubernetes
+
+Docker: Docker
+Terraform: Terraform
+Helm: Helm
+Ansible: Ansible
+Pulumi: Pulumi
+"AWS CDK": "AWS CDK"
+CDK: "AWS CDK"
+
+"GitHub Actions": "GitHub Actions"
+CircleCI: CircleCI
+Jenkins: Jenkins
+ArgoCD: ArgoCD
+"Argo CD": ArgoCD
+Flux: Flux
+Tekton: Tekton
+
+Datadog: Datadog
+Grafana: Grafana
+Prometheus: Prometheus
+OpenTelemetry: OpenTelemetry
+otel: OpenTelemetry
+Splunk: Splunk
+"New Relic": "New Relic"
+
+# ---------------------------------------------------------------------------
+# Data & ML
+# ---------------------------------------------------------------------------
+dbt: dbt
+DBT: dbt
+Airflow: Airflow
+"Apache Airflow": Airflow
+Spark: "Apache Spark"
+"Apache Spark": "Apache Spark"
+PySpark: PySpark
+Databricks: Databricks
+Fivetran: Fivetran
+Airbyte: Airbyte
+Prefect: Prefect
+Dagster: Dagster
+"Apache Flink": "Apache Flink"
+Flink: "Apache Flink"
+
+PyTorch: PyTorch
+TensorFlow: TensorFlow
+"scikit-learn": "scikit-learn"
+sklearn: "scikit-learn"
+"Hugging Face": "Hugging Face"
+"Hugging Face Transformers": "Hugging Face"
+
+# ---------------------------------------------------------------------------
+# AI / LLM
+# ---------------------------------------------------------------------------
+"Large Language Models": "Large Language Models"
+LLMs: "Large Language Models"
+LLM: "Large Language Models"
+"Retrieval-Augmented Generation": RAG
+RAG: RAG
+"vector databases": "Vector Databases"
+"Vector Databases": "Vector Databases"
+"vector search": "Vector Search"
+"Vector Search": "Vector Search"
+LangChain: LangChain
+LangGraph: LangGraph
+"OpenAI API": "OpenAI API"
+
+# ---------------------------------------------------------------------------
+# APIs & protocols
+# ---------------------------------------------------------------------------
+gRPC: gRPC
+GraphQL: GraphQL
+REST: REST
+"REST API": REST
+"RESTful API": REST
+"REST APIs": REST
+WebSockets: WebSockets
+protobuf: protobuf
+"Protocol Buffers": protobuf
+
+# ---------------------------------------------------------------------------
+# Observability / platform concepts
+# ---------------------------------------------------------------------------
+SQL: SQL
+Git: Git
+Linux: Linux
+unix: Linux
+"CI/CD": "CI/CD"
+cicd: "CI/CD"
+"continuous integration": "CI/CD"
+"continuous deployment": "CI/CD"
+"Infrastructure as Code": "Infrastructure as Code"
+IaC: "Infrastructure as Code"
+"microservices": Microservices
+Microservices: Microservices
+"distributed systems": "Distributed Systems"
+"Distributed Systems": "Distributed Systems"
+"system design": "System Design"
+"System Design": "System Design"

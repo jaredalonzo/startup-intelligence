@@ -6,14 +6,22 @@ Coordinator:        extract_skills (emits Send fan-out; no computation of its ow
 """
 from __future__ import annotations
 
+import functools
+import logging
+import pathlib
 from datetime import datetime, timedelta, timezone
 
 import anthropic
+import yaml
 from pydantic import BaseModel
 
 from agents.state import SkillExtraction, SkillsState
 from config import EXTRACTION_MODEL, SKILLS_DEFAULT_WINDOW_DAYS
 from store.db import get_connection
+
+logger = logging.getLogger(__name__)
+
+_ALIASES_FILE = pathlib.Path(__file__).parent.parent.parent / "taxonomy" / "aliases.yaml"
 
 
 class _PostingExtraction(BaseModel):
@@ -70,21 +78,84 @@ def extract_skills(state: SkillsState) -> dict:
     return {}
 
 
+@functools.cache
+def _load_aliases() -> tuple[dict[str, str], frozenset[str]]:
+    """Load alias table from aliases.yaml. Cached after first read.
+
+    Returns (aliases, known_canonicals) where aliases keys are lowercased for
+    case-insensitive lookup and known_canonicals is the set of all right-hand values.
+    """
+    with open(_ALIASES_FILE) as f:
+        raw: dict[str, str] = yaml.safe_load(f) or {}
+    aliases = {k.lower(): v for k, v in raw.items()}
+    known = frozenset(raw.values())
+    return aliases, known
+
+
+def _normalize_list(
+    items: list[str],
+    aliases: dict[str, str],
+    known: frozenset[str],
+) -> tuple[list[str], list[str]]:
+    """Normalize a list of skill/platform strings against the alias table.
+
+    Returns (normalized, unknowns). Deduplicates after normalization.
+    A skill is "unknown" if it maps to nothing in aliases and is not itself a
+    known canonical — i.e. we can't verify it through our taxonomy.
+    """
+    normalized: list[str] = []
+    unknowns: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        canonical = aliases.get(item.lower(), item)
+        if canonical not in seen:
+            normalized.append(canonical)
+            seen.add(canonical)
+        if item.lower() not in aliases and item not in known:
+            unknowns.append(item)
+    return normalized, unknowns
+
+
 def normalize_taxonomy(state: SkillsState) -> dict:
     """Apply aliases.yaml to collapse synonyms across all extractions.
 
-    e.g. k8s → Kubernetes, postgres → PostgreSQL.
-    Unknown skills are flagged as a side output for review (non-blocking).
-
-    Implemented in JAR-51.
+    Reads state["extractions"] (fan-in output from extract_one).
+    Writes state["normalized_extractions"] — a replacement list, not an append,
+    so this field has no operator.add reducer.
+    Unknown skills (not in aliases keys or values) are collected into
+    state["unknown_skills"] for periodic taxonomy review.
     """
-    raise NotImplementedError("normalize_taxonomy — implement in JAR-51")
+    aliases, known = _load_aliases()
+    normalized: list[SkillExtraction] = []
+    all_unknowns: list[str] = []
+
+    for extraction in state.get("extractions", []):
+        norm_skills, skill_unknowns = _normalize_list(extraction.skills, aliases, known)
+        norm_platforms, plat_unknowns = _normalize_list(extraction.platforms, aliases, known)
+        all_unknowns.extend(skill_unknowns + plat_unknowns)
+        normalized.append(extraction.model_copy(update={
+            "skills": norm_skills,
+            "platforms": norm_platforms,
+        }))
+
+    unique_unknowns = sorted(set(all_unknowns))
+    if unique_unknowns:
+        logger.info(
+            "Unknown skills flagged for taxonomy review (%d): %s",
+            len(unique_unknowns),
+            unique_unknowns,
+        )
+
+    return {
+        "normalized_extractions": normalized,
+        "unknown_skills": unique_unknowns,
+    }
 
 
 def aggregate_trends(state: SkillsState) -> dict:
     """Compute frequency deltas, new skills, and co-occurrence from extractions.
 
-    Returns a TrendReport. No LLM.
+    Reads state["normalized_extractions"]. Returns a TrendReport. No LLM.
 
     Implemented in JAR-52.
     """
