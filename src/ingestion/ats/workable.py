@@ -9,6 +9,7 @@ Workable uses `shortcode` (e.g. "F8427A442D") as the posting ID.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import httpx
 
@@ -28,8 +29,19 @@ async def fetch_postings(slug: str, client: httpx.AsyncClient) -> list[Posting]:
     resp = await client.post(_LIST_URL.format(slug=slug), json=_LIST_BODY, timeout=10.0)
     resp.raise_for_status()
     shortcodes = [j["shortcode"] for j in resp.json().get("results", [])]
-    details = await asyncio.gather(*[_fetch_detail(slug, sc, client) for sc in shortcodes])
-    return [_normalize(slug, d) for d in details]
+    raw = await asyncio.gather(
+        *[_fetch_detail(slug, sc, client) for sc in shortcodes],
+        return_exceptions=True,
+    )
+    postings = []
+    for sc, result in zip(shortcodes, raw):
+        if isinstance(result, Exception):
+            logging.getLogger(__name__).warning(
+                "workable detail fetch failed %s/%s: %s", slug, sc, result
+            )
+            continue
+        postings.append(_normalize(slug, result))
+    return postings
 
 
 async def _fetch_detail(slug: str, shortcode: str, client: httpx.AsyncClient) -> dict:
@@ -56,7 +68,11 @@ def _normalize(company_slug: str, job: dict) -> Posting:
         department=dept_list[0] if dept_list else None,
         team=None,
         location=location_str,
-        remote=job.get("remote") or job.get("workplace") == "remote" or None,
+        remote=(
+            True if job.get("remote") is True
+            else (None if job.get("remote") is None and job.get("workplace") != "remote"
+                  else (True if job.get("workplace") == "remote" else False))
+        ),
         employment_type=_TYPE_MAP.get(job.get("type", ""), job.get("type")),
         seniority=None,
         description_html=desc_html,
@@ -66,6 +82,6 @@ def _normalize(company_slug: str, job: dict) -> Posting:
         compensation_currency=None,
         compensation_interval=None,
         posted_at=parse_dt(job.get("published")),
-        updated_at=parse_dt(job.get("published")),  # Workable doesn't expose updated_at
+        updated_at=None,  # Workable doesn't expose updated_at; use first_seen_at for watermark queries
         raw=job,
     )

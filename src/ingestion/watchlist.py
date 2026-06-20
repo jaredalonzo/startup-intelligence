@@ -201,7 +201,6 @@ async def resolve_and_cache(
         ats, ats_slug = result
 
     upsert_company(entry.slug, entry.name, ats, ats_slug, conn)
-    conn.commit()
     return (ats, ats_slug)
 
 
@@ -220,5 +219,7 @@ async def seed_companies(
     results: dict[str, tuple[ATSSource, str] | None] = {}
     for entry in entries:
         resolved = await resolve_and_cache(entry, conn, client)
+        if resolved is not None:
+            conn.commit()  # commit per-company so a later failure doesn't roll back prior writes
         results[entry.slug] = resolved
     return results

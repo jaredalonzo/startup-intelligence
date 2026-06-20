@@ -49,6 +49,11 @@ async def ingest_company(
     """Fetch, diff, persist one company. Returns a summary dict."""
     fetch = _FETCHERS[ats]
     postings: list[Posting] = await fetch(ats_slug, client)  # type: ignore[operator]
+    if not postings:
+        # A 200 with 0 jobs is suspicious — could be a transient CDN response.
+        # Skip the snapshot so we don't record a false total-closure; retry next run.
+        log.warning("%s (%s:%s) returned 0 postings — skipping snapshot", slug, ats, ats_slug)
+        return {"slug": slug, "ats": ats, "total": 0, "new": 0, "removed": 0, "snapshot_id": None}
     # Adapters use ats_slug as company_slug; rebind to canonical slug for FK integrity.
     if ats_slug != slug:
         postings = [p.model_copy(update={"company_slug": slug}) for p in postings]

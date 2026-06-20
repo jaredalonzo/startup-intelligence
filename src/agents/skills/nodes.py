@@ -16,7 +16,8 @@ from agents.state import SkillsState
 def load_deltas(state: SkillsState) -> dict:
     """Load technical job postings updated since the last watermark.
 
-    Queries the postings table for rows with updated_at > watermark.
+    Queries postings by first_seen_at > watermark (not updated_at, which is NULL
+    for Ashby and Workable boards that do not expose a true updatedAt field).
     Returns new_postings and advances the watermark to NOW().
 
     Implemented in JAR-50.

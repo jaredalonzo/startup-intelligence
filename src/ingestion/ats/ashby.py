@@ -59,7 +59,7 @@ def _normalize(company_slug: str, j: dict) -> Posting:
         if comp_entry
         else None,
         posted_at=published,
-        updated_at=published,
+        updated_at=None,  # Ashby public API has no updatedAt; use first_seen_at for watermark queries
         raw=j,
     )
 

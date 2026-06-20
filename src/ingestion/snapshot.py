@@ -1,10 +1,10 @@
 """Snapshot and posting persistence for the ingestion pipeline."""
 from __future__ import annotations
 
-import json
 import re
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 from ingestion.ats.models import Posting
 
@@ -69,7 +69,7 @@ def upsert_postings(postings: list[Posting], conn: psycopg.Connection) -> None: 
                 p.compensation_min, p.compensation_max,
                 p.compensation_currency, p.compensation_interval,
                 p.posted_at, p.updated_at,
-                json.dumps(p.raw),
+                Jsonb(p.raw),
             ),
         )
 

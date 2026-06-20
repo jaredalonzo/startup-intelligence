@@ -6,6 +6,9 @@ LangGraph nodes can each use the appropriate interface.
 """
 
 import os
+from contextlib import contextmanager
+from typing import Iterator
+
 import psycopg
 import psycopg.rows
 from psycopg_pool import ConnectionPool, AsyncConnectionPool
@@ -18,9 +21,19 @@ def _url() -> str:
     return url
 
 
-def get_connection() -> psycopg.Connection:
-    """Return a synchronous psycopg3 connection. Caller is responsible for closing."""
-    return psycopg.connect(_url(), row_factory=psycopg.rows.dict_row)
+@contextmanager
+def get_connection() -> Iterator[psycopg.Connection]:  # type: ignore[type-arg]
+    """Context manager: yields a psycopg3 connection and always closes it on exit.
+
+    psycopg3's Connection.__exit__ manages transactions only — it does not close
+    the connection. This wrapper adds the close() so connections are never leaked.
+    Transaction commit/rollback remains the caller's responsibility.
+    """
+    conn = psycopg.connect(_url(), row_factory=psycopg.rows.dict_row)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def make_pool(min_size: int = 1, max_size: int = 5) -> ConnectionPool:
