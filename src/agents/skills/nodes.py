@@ -9,14 +9,22 @@ from __future__ import annotations
 import functools
 import logging
 import pathlib
+from collections import Counter
 from datetime import datetime, timedelta, timezone
+from itertools import combinations
 
 import anthropic
 import yaml
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
-from agents.state import SkillExtraction, SkillsState
-from config import EXTRACTION_MODEL, SKILLS_DEFAULT_WINDOW_DAYS
+from agents.state import SkillExtraction, SkillTrend, SkillsState, TrendReport
+from config import (
+    EXTRACTION_MODEL,
+    SKILLS_DEFAULT_WINDOW_DAYS,
+    SKILLS_MIN_POSTING_COUNT,
+    SKILLS_TOP_N,
+)
 from store.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -152,14 +160,137 @@ def normalize_taxonomy(state: SkillsState) -> dict:
     }
 
 
-def aggregate_trends(state: SkillsState) -> dict:
-    """Compute frequency deltas, new skills, and co-occurrence from extractions.
+def _persist_extractions(extractions: list[SkillExtraction], conn) -> None:  # type: ignore[type-arg]
+    """Insert normalized extractions into the DB. Append-only by design.
 
-    Reads state["normalized_extractions"]. Returns a TrendReport. No LLM.
-
-    Implemented in JAR-52.
+    Duplicate rows on graph retry are safe — downstream reads use
+    extracted_at DESC per posting to get the most recent extraction.
     """
-    raise NotImplementedError("aggregate_trends — implement in JAR-52")
+    for ex in extractions:
+        conn.execute(
+            """
+            INSERT INTO extractions
+                (ats, posting_id, extracted_at, model, skills, platforms,
+                 seniority_signal, comp_min, comp_max, comp_currency, comp_interval, raw)
+            VALUES
+                (%(ats)s, %(posting_id)s, NOW(), %(model)s, %(skills)s, %(platforms)s,
+                 %(seniority)s, %(comp_min)s, %(comp_max)s, %(comp_currency)s, %(comp_interval)s, %(raw)s)
+            """,
+            {
+                "ats": ex.ats,
+                "posting_id": ex.posting_id,
+                "model": EXTRACTION_MODEL,
+                "skills": ex.skills,
+                "platforms": ex.platforms,
+                "seniority": ex.seniority,
+                "comp_min": ex.comp_min,
+                "comp_max": ex.comp_max,
+                "comp_currency": ex.comp_currency,
+                "comp_interval": ex.comp_interval,
+                "raw": Jsonb(ex.model_dump()),
+            },
+        )
+    conn.commit()
+
+
+def _query_prev_counts(conn, window_days: int) -> tuple[Counter[str], Counter[str]]:  # type: ignore[type-arg]
+    """Query skill/platform counts from the previous equal-duration window.
+
+    Previous window = [now - 2×window_days, now - window_days].
+    On first run the table is empty, so both Counters return zero for every key.
+    Uses timedelta params so psycopg3 maps them to PG interval natively.
+    """
+    rows = conn.execute(
+        """
+        SELECT skills, platforms
+        FROM extractions
+        WHERE extracted_at <  NOW() - %(current)s
+          AND extracted_at >= NOW() - %(lookback)s
+        """,
+        {
+            "current": timedelta(days=window_days),
+            "lookback": timedelta(days=window_days * 2),
+        },
+    ).fetchall()
+
+    skill_counts: Counter[str] = Counter()
+    platform_counts: Counter[str] = Counter()
+    for row in rows:
+        for s in row["skills"] or []:
+            skill_counts[s] += 1
+        for p in row["platforms"] or []:
+            platform_counts[p] += 1
+    return skill_counts, platform_counts
+
+
+def aggregate_trends(state: SkillsState) -> dict:
+    """Compute frequency deltas, new skills, and co-occurrence from normalized extractions.
+
+    Persists the current extractions to the DB first (so future runs have a
+    previous window to diff against), then queries the previous equal-duration
+    window to compute count_previous for each skill/platform. No LLM.
+    """
+    extractions = state.get("normalized_extractions") or []
+    total = len(extractions)
+    window_days = SKILLS_DEFAULT_WINDOW_DAYS
+
+    with get_connection() as conn:
+        _persist_extractions(extractions, conn)
+        prev_skills, prev_platforms = _query_prev_counts(conn, window_days)
+
+    # Count skill and platform frequencies in the current window
+    curr_skills: Counter[str] = Counter()
+    curr_platforms: Counter[str] = Counter()
+    co_counts: Counter[tuple[str, str]] = Counter()
+
+    for ex in extractions:
+        for s in ex.skills:
+            curr_skills[s] += 1
+        for p in ex.platforms:
+            curr_platforms[p] += 1
+        # Pairs are sorted so (A, B) and (B, A) are the same bucket
+        for pair in combinations(sorted(set(ex.skills)), 2):
+            co_counts[pair] += 1
+
+    def _trend(name: str, curr: int, prev: int) -> SkillTrend:
+        return SkillTrend(
+            skill=name,
+            count_current=curr,
+            count_previous=prev,
+            delta=curr - prev,
+            pct_of_postings=curr / total if total else 0.0,
+        )
+
+    # Only include skills that meet the minimum posting count threshold
+    qualified = {s for s in curr_skills if curr_skills[s] >= SKILLS_MIN_POSTING_COUNT}
+    skill_trends = [_trend(s, curr_skills[s], prev_skills[s]) for s in qualified]
+
+    rising  = sorted([t for t in skill_trends if t.delta > 0], key=lambda t: -t.delta)[:SKILLS_TOP_N]
+    falling = sorted([t for t in skill_trends if t.delta < 0], key=lambda t:  t.delta)[:SKILLS_TOP_N]
+    new     = [s for s in qualified if prev_skills[s] == 0]
+
+    platform_trends = sorted(
+        [
+            _trend(p, curr_platforms[p], prev_platforms[p])
+            for p in curr_platforms
+            if curr_platforms[p] >= SKILLS_MIN_POSTING_COUNT
+        ],
+        key=lambda t: -t.count_current,
+    )[:SKILLS_TOP_N]
+
+    co_occurrences = [(a, b, n) for (a, b), n in co_counts.most_common(SKILLS_TOP_N)]
+
+    return {
+        "trend_report": TrendReport(
+            window_days=window_days,
+            total_postings=total,
+            rising=rising,
+            falling=falling,
+            new=new,
+            top_platforms=platform_trends,
+            co_occurrences=co_occurrences,
+        )
+    }
 
 
 def route_outputs(state: SkillsState) -> dict:
