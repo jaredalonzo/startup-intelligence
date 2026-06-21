@@ -5,13 +5,14 @@ from dataclasses import dataclass
 
 import httpx
 
-from ingestion.ats import Posting, greenhouse, lever, ashby
+from ingestion.ats import Posting, greenhouse, lever, ashby, workable
 
 # One known slug per provider
 TESTS = [
-    ("greenhouse", "anthropic",  greenhouse.fetch_postings),
-    ("lever",      "mistral",    lever.fetch_postings),
-    ("ashby",      "linear",     ashby.fetch_postings),
+    ("greenhouse", "anthropic",    greenhouse.fetch_postings),
+    ("lever",      "mistral",      lever.fetch_postings),
+    ("ashby",      "linear",       ashby.fetch_postings),
+    ("workable",   "huggingface",  workable.fetch_postings),
 ]
 
 
