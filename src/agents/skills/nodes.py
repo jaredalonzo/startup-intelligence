@@ -22,8 +22,11 @@ from agents.state import SkillExtraction, SkillTrend, SkillsState, TrendReport
 from config import (
     EXTRACTION_MODEL,
     SKILLS_DEFAULT_WINDOW_DAYS,
+    SKILLS_GAP_TASK_THRESHOLD_PCT,
     SKILLS_MIN_POSTING_COUNT,
     SKILLS_TOP_N,
+    SYNTHESIS_MODEL,
+    TARGET_ROLES,
 )
 from store.db import get_connection
 
@@ -296,9 +299,40 @@ def aggregate_trends(state: SkillsState) -> dict:
 def route_outputs(state: SkillsState) -> dict:
     """Write the radar digest to Notion and create Linear gap tasks if thresholds crossed.
 
-    Deterministic. Implemented in JAR-53.
+    Gap skills are any skill/platform whose pct_of_postings >= SKILLS_GAP_TASK_THRESHOLD_PCT.
+    Notion write and Linear task creation are stubbed here; wired in M4 (outputs/).
     """
-    raise NotImplementedError("route_outputs — implement in JAR-53")
+    digest = state.get("radar_digest") or ""
+    report = state.get("trend_report")
+
+    logger.info("=== SKILLS RADAR DIGEST ===\n%s", digest)
+
+    if report:
+        all_trends = report.rising + report.falling + report.top_platforms
+        seen: set[str] = set()
+        gap_skills = []
+        for t in all_trends:
+            if t.skill not in seen and t.pct_of_postings >= SKILLS_GAP_TASK_THRESHOLD_PCT:
+                gap_skills.append(t)
+                seen.add(t.skill)
+
+        if gap_skills:
+            logger.info(
+                "Gap tasks to create in Linear (%d skills above %.0f%% threshold): %s",
+                len(gap_skills),
+                SKILLS_GAP_TASK_THRESHOLD_PCT * 100,
+                [t.skill for t in gap_skills],
+            )
+        else:
+            logger.info(
+                "No skills above gap threshold (%.0f%%)",
+                SKILLS_GAP_TASK_THRESHOLD_PCT * 100,
+            )
+
+    # TODO (M4): outputs.notion.write_skills_digest(digest)
+    # TODO (M4): outputs.linear.create_gap_tasks(gap_skills)
+
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -359,9 +393,90 @@ def synthesize_radar(state: SkillsState) -> dict:
     """Turn the TrendReport into a personalized skills radar digest.
 
     Targets FDE, TAM, CSE, and implementation archetypes. Highlights what's
-    heating up, what's now table-stakes, what's fading, with example JDs and
-    specific gaps to close.
-
-    Implemented in JAR-53.
+    heating up, what's now table-stakes, what's fading, with specific gaps to close.
     """
-    raise NotImplementedError("synthesize_radar — implement in JAR-53")
+    report = state.get("trend_report")
+    if report is None:
+        return {"radar_digest": None}
+
+    def _trend_lines(trends: list[SkillTrend]) -> str:
+        return "\n".join(
+            f"  - {t.skill}: delta={t.delta:+d}, {t.pct_of_postings:.1%} of postings"
+            for t in trends
+        ) or "  none"
+
+    rising_lines   = _trend_lines(report.rising)
+    falling_lines  = _trend_lines(report.falling)
+    platform_lines = _trend_lines(report.top_platforms)
+    new_skills     = ", ".join(report.new) if report.new else "none"
+    co_lines       = "\n".join(
+        f"  - {a} + {b}: {n} postings"
+        for a, b, n in report.co_occurrences[:10]
+    ) or "  none"
+    roles_str = ", ".join(TARGET_ROLES)
+
+    prompt = f"""Hiring signal data from {report.total_postings} technical job postings across \
+AI/data/infra startups over the past {report.window_days} days.
+
+RISING SKILLS (largest increase vs previous window):
+{rising_lines}
+
+FALLING SKILLS (largest decrease vs previous window):
+{falling_lines}
+
+NEW SKILLS (appeared for the first time this window):
+{new_skills}
+
+TOP PLATFORMS by posting volume:
+{platform_lines}
+
+COMMON CO-OCCURRENCES (skills frequently required together):
+{co_lines}
+
+Produce a skills radar digest for someone targeting these roles: {roles_str}.
+
+Structure your response as markdown with exactly these sections:
+## Heating Up
+Skills rising fast — worth prioritizing now.
+
+## Table Stakes
+High-frequency skills that are now baseline expectations.
+
+## Fading
+Skills declining — deprioritize unless already strong.
+
+## New on the Radar
+Skills newly appearing — early signal worth watching.
+
+## Platform & Infrastructure Signals
+Cloud/infra trends relevant to the target roles.
+
+## Gaps to Close
+Skills appearing in ≥{SKILLS_GAP_TASK_THRESHOLD_PCT:.0%} of postings that are likely gaps \
+for the target archetypes.
+
+Be specific and actionable. Name actual skills, not categories. Keep each section to 3–5 bullets."""
+
+    client = anthropic.Anthropic()
+    response = client.messages.create(
+        model=SYNTHESIS_MODEL,
+        max_tokens=2048,
+        system=(
+            "You are a technical skills analyst for AI/data/infra roles. "
+            "Write concise, actionable radar digests. "
+            "Use specific skill names, not vague categories. "
+            "Be direct about what to prioritize and why."
+        ),
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    from anthropic.types import TextBlock
+    digest = next(b.text for b in response.content if isinstance(b, TextBlock))
+    logger.info(
+        "synthesize_radar: generated %d-char digest (model=%s, input_tokens=%d, output_tokens=%d)",
+        len(digest),
+        SYNTHESIS_MODEL,
+        response.usage.input_tokens,
+        response.usage.output_tokens,
+    )
+    return {"radar_digest": digest}
