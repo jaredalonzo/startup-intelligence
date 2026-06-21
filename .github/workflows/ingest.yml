@@ -25,3 +25,81 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python scripts/ingest.py
+
+      - name: Write ingest summary
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python - <<'EOF'
+          import os
+          from datetime import datetime, timezone, timedelta
+          from store.db import get_connection
+
+          since = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+          summary_file = os.environ["GITHUB_STEP_SUMMARY"]
+
+          with get_connection() as conn:
+              total = conn.execute(
+                  "SELECT COUNT(*) as n FROM postings WHERE first_seen_at >= %s", (since,)
+              ).fetchone()["n"]
+
+              by_ats = conn.execute(
+                  "SELECT ats, COUNT(*) as n FROM postings WHERE first_seen_at >= %s GROUP BY ats ORDER BY n DESC",
+                  (since,),
+              ).fetchall()
+
+              by_company = conn.execute(
+                  """
+                  SELECT company_slug, ats, COUNT(*) as n
+                  FROM postings WHERE first_seen_at >= %s
+                  GROUP BY company_slug, ats ORDER BY n DESC
+                  """,
+                  (since,),
+              ).fetchall()
+
+              snapshots = conn.execute(
+                  """
+                  SELECT company_slug, posting_count, eng_count,
+                         cardinality(new_ids) AS new_count,
+                         cardinality(removed_ids) AS removed_count
+                  FROM snapshots WHERE snapshot_at >= %s ORDER BY company_slug
+                  """,
+                  (since,),
+              ).fetchall()
+
+              ingested_slugs = {r["company_slug"] for r in by_company}
+              all_companies = conn.execute("SELECT slug FROM companies ORDER BY slug").fetchall()
+              skipped = [r["slug"] for r in all_companies if r["slug"] not in ingested_slugs]
+
+          lines = [
+              f"## Ingest Summary — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+              f"",
+              f"**{total} new postings ingested** (last 25 hours)",
+              f"",
+          ]
+
+          if by_ats:
+              lines += ["### By ATS", "| ATS | New Postings |", "|---|---|"]
+              for r in by_ats:
+                  lines.append(f"| {r['ats']} | {r['n']} |")
+              lines.append("")
+
+          if by_company:
+              lines += ["### By Company", "| Company | ATS | New Postings |", "|---|---|---|"]
+              for r in by_company:
+                  lines.append(f"| {r['company_slug']} | {r['ats']} | {r['n']} |")
+              lines.append("")
+
+          if snapshots:
+              lines += ["### Snapshot Activity", "| Company | Total | Eng | New | Removed |", "|---|---|---|---|---|"]
+              for r in snapshots:
+                  lines.append(f"| {r['company_slug']} | {r['posting_count']} | {r['eng_count']} | {r['new_count']} | {r['removed_count']} |")
+              lines.append("")
+
+          if skipped:
+              lines += [f"### No New Postings", ", ".join(skipped), ""]
+
+          with open(summary_file, "w") as f:
+              f.write("\n".join(lines))
+          EOF
