@@ -60,10 +60,11 @@ jobs:
 
               snapshots = conn.execute(
                   """
-                  SELECT company_slug, posting_count, eng_count,
+                  SELECT DISTINCT ON (company_slug) company_slug, posting_count, eng_count,
                          cardinality(new_ids) AS new_count,
                          cardinality(removed_ids) AS removed_count
-                  FROM snapshots WHERE snapshot_at >= %s ORDER BY company_slug
+                  FROM snapshots WHERE snapshot_at >= %s
+                  ORDER BY company_slug, snapshot_at DESC
                   """,
                   (since,),
               ).fetchall()
