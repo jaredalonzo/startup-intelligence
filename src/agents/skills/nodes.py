@@ -28,6 +28,7 @@ from config import (
     SYNTHESIS_LLM,
     TARGET_ROLES,
 )
+from outputs.notion import write_skills_digest
 from store.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -307,6 +308,10 @@ def route_outputs(state: SkillsState) -> dict:
 
     logger.info("=== SKILLS RADAR DIGEST ===\n%s", digest)
 
+    if digest:
+        page_url = write_skills_digest(digest)
+        logger.info("Skills radar digest written to Notion: %s", page_url)
+
     if report:
         all_trends = report.rising + report.falling + report.top_platforms
         seen: set[str] = set()
@@ -329,7 +334,6 @@ def route_outputs(state: SkillsState) -> dict:
                 SKILLS_GAP_TASK_THRESHOLD_PCT * 100,
             )
 
-    # TODO (M4): outputs.notion.write_skills_digest(digest)
     # TODO (M4): outputs.linear.create_gap_tasks(gap_skills)
 
     return {}
