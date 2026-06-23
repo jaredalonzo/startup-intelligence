@@ -14,13 +14,17 @@ Compiled with a Postgres checkpointer for resumability and run history.
 from __future__ import annotations
 
 import os
-from typing import Literal
+from contextlib import contextmanager
+from typing import Iterator, Literal
 
 from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
+from psycopg import Connection
+from psycopg.rows import dict_row
 
-from agents.state import SkillExtraction, SkillsState
+from agents.state import SkillExtraction, SkillTrend, SkillsState, TrendReport
 from agents.skills import nodes
 
 # ---------------------------------------------------------------------------
@@ -77,8 +81,14 @@ def compile_graph(checkpointer: PostgresSaver | None = None):
     return g.compile(checkpointer=checkpointer)
 
 
-def make_checkpointer() -> PostgresSaver:
-    """Return a PostgresSaver backed by DATABASE_URL."""
+@contextmanager
+def make_checkpointer() -> Iterator[PostgresSaver]:
+    """Yield a PostgresSaver with registered state types to suppress msgpack warnings."""
+    serde = JsonPlusSerializer(
+        allowed_msgpack_modules=[SkillExtraction, SkillTrend, TrendReport],
+    )
     db_url = os.environ["DATABASE_URL"]
-    # psycopg3 expects the postgresql:// scheme; PostgresSaver accepts it directly.
-    return PostgresSaver.from_conn_string(db_url)
+    with Connection.connect(
+        db_url, autocommit=True, prepare_threshold=0, row_factory=dict_row
+    ) as conn:
+        yield PostgresSaver(conn, serde=serde)
