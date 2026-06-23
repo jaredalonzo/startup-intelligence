@@ -110,3 +110,68 @@ CREATE TABLE IF NOT EXISTS watermarks (
     last_fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (company_slug, ats)
 );
+
+-- ---------------------------------------------------------------------------
+-- Supplementary signal metadata on companies (M3b)
+-- Added after initial schema; safe to re-run (IF NOT EXISTS / DO NOTHING).
+-- ---------------------------------------------------------------------------
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS github_org   TEXT;  -- e.g. 'anthropics'
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS blog_url     TEXT;  -- e.g. 'https://anthropic.com/blog'
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS blog_rss_url TEXT;  -- null when no RSS feed detected
+
+-- ---------------------------------------------------------------------------
+-- github_releases
+-- Append-only. One row per release per repo. Deduped on (repo, release_tag).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS github_releases (
+    id              BIGSERIAL   PRIMARY KEY,
+    company_slug    TEXT        NOT NULL REFERENCES companies(slug),
+    repo            TEXT        NOT NULL,              -- e.g. 'openai/openai-python'
+    release_tag     TEXT        NOT NULL,              -- e.g. 'v1.2.0'
+    release_name    TEXT,
+    published_at    TIMESTAMPTZ,
+    body            TEXT,                              -- release notes
+    first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    raw             JSONB       NOT NULL,
+    UNIQUE (repo, release_tag)
+);
+
+CREATE INDEX IF NOT EXISTS github_releases_company_at_idx
+    ON github_releases (company_slug, published_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- github_repo_stats
+-- Star/fork/issue count snapshots. One row per (repo, run). Time-series;
+-- never updated. Diff consecutive rows to get trajectory.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS github_repo_stats (
+    id              BIGSERIAL   PRIMARY KEY,
+    company_slug    TEXT        NOT NULL REFERENCES companies(slug),
+    repo            TEXT        NOT NULL,              -- e.g. 'openai/openai-python'
+    measured_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    star_count      INTEGER     NOT NULL,
+    fork_count      INTEGER,
+    open_issues     INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS github_repo_stats_company_repo_idx
+    ON github_repo_stats (company_slug, repo, measured_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- blog_posts
+-- Append-only. One row per post per company. Deduped on (company_slug, url).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS blog_posts (
+    id              BIGSERIAL   PRIMARY KEY,
+    company_slug    TEXT        NOT NULL REFERENCES companies(slug),
+    url             TEXT        NOT NULL,
+    title           TEXT        NOT NULL,
+    published_at    TIMESTAMPTZ,
+    summary         TEXT,                              -- excerpt/description from feed
+    first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    raw             JSONB       NOT NULL,
+    UNIQUE (company_slug, url)
+);
+
+CREATE INDEX IF NOT EXISTS blog_posts_company_at_idx
+    ON blog_posts (company_slug, published_at DESC);
