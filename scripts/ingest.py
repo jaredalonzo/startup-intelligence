@@ -1,9 +1,9 @@
 """Scheduled ingestion entrypoint.
 
 Fetches all watchlist companies from the DB, pulls their ATS job boards,
-writes postings, snapshots, and watermarks. One company failure never aborts
-the full run — errors are logged and the watermark is left unchanged so the
-company is retried on the next run.
+writes postings, snapshots, and watermarks. Also fetches GitHub signals
+(releases + repo stats) for companies with a github_org configured.
+One company failure never aborts the full run.
 
 Usage:
     python scripts/ingest.py
@@ -26,6 +26,7 @@ load_dotenv()
 from ingestion.ats import ashby, greenhouse, lever, workable
 from ingestion.ats.models import ATSSource, Posting
 from ingestion.diff import compute_diff
+from ingestion.signals.github_org import fetch_github_signals, write_github_signals
 from ingestion.snapshot import update_watermark, upsert_postings, write_snapshot
 from store.db import get_connection
 
@@ -44,27 +45,38 @@ async def ingest_company(
     slug: str,
     ats: ATSSource,
     ats_slug: str,
+    github_org: str | None,
     client: httpx.AsyncClient,
 ) -> dict[str, object]:
     """Fetch, diff, persist one company. Returns a summary dict."""
     fetch = _FETCHERS[ats]
     postings: list[Posting] = await fetch(ats_slug, client)  # type: ignore[operator]
     if not postings:
-        # A 200 with 0 jobs is suspicious — could be a transient CDN response.
-        # Skip the snapshot so we don't record a false total-closure; retry next run.
         log.warning("%s (%s:%s) returned 0 postings — skipping snapshot", slug, ats, ats_slug)
-        return {"slug": slug, "ats": ats, "total": 0, "new": 0, "removed": 0, "snapshot_id": None}
-    # Adapters use ats_slug as company_slug; rebind to canonical slug for FK integrity.
+        return {"slug": slug, "ats": ats, "total": 0, "new": 0, "removed": 0,
+                "snapshot_id": None, "gh_releases": 0, "gh_repos": 0}
     if ats_slug != slug:
         postings = [p.model_copy(update={"company_slug": slug}) for p in postings]
     current_ids = {p.id for p in postings}
 
+    # ATS + snapshot (DB write)
     with get_connection() as conn:
         new_ids, removed_ids = compute_diff(slug, ats, current_ids, conn)
         upsert_postings(postings, conn)
         snapshot_id = write_snapshot(slug, postings, new_ids, removed_ids, conn)
         update_watermark(slug, ats, conn)
         conn.commit()
+
+    # GitHub signals (independent — failure doesn't affect ATS result)
+    gh_releases = gh_repos = 0
+    if github_org:
+        try:
+            releases, snapshots = await fetch_github_signals(slug, github_org, client)
+            with get_connection() as conn:
+                gh_releases, gh_repos = write_github_signals(releases, snapshots, conn)
+                conn.commit()
+        except Exception:
+            log.exception("%s: GitHub signal fetch failed — skipping", slug)
 
     return {
         "slug": slug,
@@ -73,26 +85,31 @@ async def ingest_company(
         "new": len(new_ids),
         "removed": len(removed_ids),
         "snapshot_id": snapshot_id,
+        "gh_releases": gh_releases,
+        "gh_repos": gh_repos,
     }
 
 
 async def main() -> None:
     with get_connection() as conn:
         companies = conn.execute(
-            "SELECT slug, ats, ats_slug FROM companies ORDER BY slug"
+            "SELECT slug, ats, ats_slug, github_org FROM companies ORDER BY slug"
         ).fetchall()
 
     log.info("Starting ingestion run for %d companies", len(companies))
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
         for row in companies:
-            slug, ats, ats_slug = row["slug"], row["ats"], row["ats_slug"]
+            slug, ats, ats_slug, github_org = (
+                row["slug"], row["ats"], row["ats_slug"], row["github_org"]
+            )
             try:
-                result = await ingest_company(slug, ats, ats_slug, client)
+                result = await ingest_company(slug, ats, ats_slug, github_org, client)
                 log.info(
-                    "%s (%s:%s)  total=%d  new=%d  removed=%d  snapshot=%s",
+                    "%s (%s:%s)  total=%d  new=%d  removed=%d  snapshot=%s  gh_releases=%d  gh_repos=%d",
                     result["slug"], result["ats"], ats_slug,
                     result["total"], result["new"], result["removed"], result["snapshot_id"],
+                    result["gh_releases"], result["gh_repos"],
                 )
             except Exception:
                 log.exception("Failed to ingest %s (%s:%s) — skipping", slug, ats, ats_slug)

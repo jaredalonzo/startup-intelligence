@@ -24,6 +24,7 @@ jobs:
       - name: Run ingestion
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/ingest.py
 
       - name: Write ingest summary
@@ -73,6 +74,23 @@ jobs:
               all_companies = conn.execute("SELECT slug FROM companies ORDER BY slug").fetchall()
               skipped = [r["slug"] for r in all_companies if r["slug"] not in ingested_slugs]
 
+              gh_releases = conn.execute(
+                  "SELECT COUNT(*) as n FROM github_releases WHERE first_seen_at >= %s", (since,)
+              ).fetchone()["n"]
+
+              gh_repos = conn.execute(
+                  "SELECT COUNT(*) as n FROM github_repo_stats WHERE measured_at >= %s", (since,)
+              ).fetchone()["n"]
+
+              gh_by_company = conn.execute(
+                  """
+                  SELECT company_slug, COUNT(*) as releases
+                  FROM github_releases WHERE first_seen_at >= %s
+                  GROUP BY company_slug ORDER BY releases DESC
+                  """,
+                  (since,),
+              ).fetchall()
+
           lines = [
               f"## Ingest Summary — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
               f"",
@@ -99,7 +117,18 @@ jobs:
               lines.append("")
 
           if skipped:
-              lines += [f"### No New Postings", ", ".join(skipped), ""]
+              lines += ["### No New Postings", ", ".join(skipped), ""]
+
+          lines += [
+              f"### GitHub Signals",
+              f"**{gh_releases} new releases** across **{gh_repos} repo snapshots** (last 25 hours)",
+              f"",
+          ]
+          if gh_by_company:
+              lines += ["| Company | New Releases |", "|---|---|"]
+              for r in gh_by_company:
+                  lines.append(f"| {r['company_slug']} | {r['releases']} |")
+              lines.append("")
 
           with open(summary_file, "w") as f:
               f.write("\n".join(lines))
