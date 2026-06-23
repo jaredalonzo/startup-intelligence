@@ -31,6 +31,9 @@ class WatchlistEntry:
     slug: str        # canonical key used throughout the system
     ats: ATSSource | None = None       # set if already known; skips probing
     ats_slug: str | None = None        # set when ATS slug differs from slug
+    github_org: str | None = None      # GitHub org slug, e.g. 'anthropics'
+    blog_url: str | None = None        # blog/news page URL
+    blog_rss_url: str | None = None    # RSS feed URL, null if not available
 
 
 # ---------------------------------------------------------------------------
@@ -39,32 +42,79 @@ class WatchlistEntry:
 
 COMPANIES: list[WatchlistEntry] = [
     # Foundation models
-    WatchlistEntry("Anthropic",  "anthropic",   "greenhouse", "anthropic"),
-    WatchlistEntry("OpenAI",     "openai",       "ashby",      "openai"),
-    WatchlistEntry("Cohere",     "cohere",       "ashby",      "cohere"),
-    WatchlistEntry("Mistral AI", "mistral",      "lever",      "mistral"),
+    WatchlistEntry("Anthropic",  "anthropic",   "greenhouse", "anthropic",
+                   github_org="anthropics",
+                   blog_url="https://www.anthropic.com/blog"),
+    WatchlistEntry("OpenAI",     "openai",       "ashby",      "openai",
+                   github_org="openai",
+                   blog_rss_url="https://openai.com/blog/rss.xml"),
+    WatchlistEntry("Cohere",     "cohere",       "ashby",      "cohere",
+                   github_org="cohere-ai",
+                   blog_url="https://cohere.com/blog"),
+    WatchlistEntry("Mistral AI", "mistral",      "lever",      "mistral",
+                   github_org="mistralai",
+                   blog_url="https://mistral.ai/news",
+                   blog_rss_url="https://mistral.ai/rss.xml"),
     # AI applications
-    WatchlistEntry("Perplexity AI", "perplexityai", "ashby",  "perplexity"),
-    WatchlistEntry("Character.AI",  "character",    "ashby",  "character"),
-    WatchlistEntry("Harvey",        "harvey",       "ashby",  "harvey"),
-    WatchlistEntry("Sierra",        "sierra",       "ashby",  "sierra"),
-    WatchlistEntry("Cognition",     "cognition",    "greenhouse", "cognitionlabs"),
-    WatchlistEntry("Glean",         "glean",        "greenhouse", "gleanwork"),
+    WatchlistEntry("Perplexity AI", "perplexityai", "ashby",  "perplexity",
+                   github_org="perplexity-ai"),
+    WatchlistEntry("Character.AI",  "character",    "ashby",  "character",
+                   github_org="character-ai"),
+    WatchlistEntry("Harvey",        "harvey",       "ashby",  "harvey",
+                   blog_url="https://www.harvey.ai/blog"),
+    WatchlistEntry("Sierra",        "sierra",       "ashby",  "sierra",
+                   blog_url="https://sierra.ai/blog",
+                   blog_rss_url="https://sierra.ai/rss.xml"),
+    WatchlistEntry("Cognition",     "cognition",    "greenhouse", "cognitionlabs",
+                   github_org="cognition-ai",
+                   blog_url="https://www.cognition.ai/blog"),
+    WatchlistEntry("Glean",         "glean",        "greenhouse", "gleanwork",
+                   github_org="gleanwork",
+                   blog_url="https://www.glean.com/blog"),
     # Data / infra
-    WatchlistEntry("Scale AI",        "scaleai",    "greenhouse", "scaleai"),
-    WatchlistEntry("Hugging Face",    "huggingface", "workable", "huggingface"),
-    WatchlistEntry("Anyscale",        "anyscale",   "lever",      "anyscale"),
-    WatchlistEntry("Modal",           "modal-labs", "ashby",      "modal"),
-    WatchlistEntry("Runway",          "runway",     "ashby",      "runway"),
+    WatchlistEntry("Scale AI",        "scaleai",    "greenhouse", "scaleai",
+                   github_org="scaleapi",
+                   blog_url="https://scale.com/blog"),
+    WatchlistEntry("Hugging Face",    "huggingface", "workable", "huggingface",
+                   github_org="huggingface",
+                   blog_url="https://huggingface.co/blog",
+                   blog_rss_url="https://huggingface.co/blog/feed.xml"),
+    WatchlistEntry("Anyscale",        "anyscale",   "lever",      "anyscale",
+                   github_org="ray-project",
+                   blog_url="https://www.anyscale.com/blog",
+                   blog_rss_url="https://www.anyscale.com/rss.xml"),
+    WatchlistEntry("Modal",           "modal-labs", "ashby",      "modal",
+                   github_org="modal-labs",
+                   blog_url="https://modal.com/blog"),
+    WatchlistEntry("Runway",          "runway",     "ashby",      "runway",
+                   github_org="runwayml",
+                   blog_url="https://runwayml.com/blog"),
     # Vector / retrieval
-    WatchlistEntry("Pinecone",  "pinecone", "ashby", "pinecone"),
-    WatchlistEntry("Weaviate",  "weaviate", "ashby", "weaviate"),
+    WatchlistEntry("Pinecone",  "pinecone", "ashby", "pinecone",
+                   github_org="pinecone-io",
+                   blog_url="https://www.pinecone.io/blog",
+                   blog_rss_url="https://www.pinecone.io/rss"),
+    WatchlistEntry("Weaviate",  "weaviate", "ashby", "weaviate",
+                   github_org="weaviate",
+                   blog_url="https://weaviate.io/blog",
+                   blog_rss_url="https://weaviate.io/blog/rss.xml"),
     # Tooling / platforms
-    WatchlistEntry("LangChain",   "langchain",  "ashby",      "langchain"),
-    WatchlistEntry("Together AI", "togetherai", "greenhouse", "togetherai"),
+    WatchlistEntry("LangChain",   "langchain",  "ashby",      "langchain",
+                   github_org="langchain-ai",
+                   blog_url="https://www.langchain.com/blog",
+                   blog_rss_url="https://www.langchain.com/blog/rss.xml"),
+    WatchlistEntry("Together AI", "togetherai", "greenhouse", "togetherai",
+                   github_org="togethercomputer",
+                   blog_url="https://www.together.ai/blog",
+                   blog_rss_url="https://www.together.ai/blog/rss.xml"),
     # Observability / voice
-    WatchlistEntry("Arize AI",    "arize",      "greenhouse", "arizeai"),
-    WatchlistEntry("Cartesia AI", "cartesia",   "ashby",      "cartesia"),
+    WatchlistEntry("Arize AI",    "arize",      "greenhouse", "arizeai",
+                   github_org="Arize-ai",
+                   blog_url="https://arize.com/blog",
+                   blog_rss_url="https://arize.com/feed/"),
+    WatchlistEntry("Cartesia AI", "cartesia",   "ashby",      "cartesia",
+                   github_org="cartesia-ai",
+                   blog_url="https://cartesia.ai/blog"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -159,19 +209,26 @@ def upsert_company(
     ats: ATSSource,
     ats_slug: str,
     conn: psycopg.Connection,  # type: ignore[type-arg]
+    github_org: str | None = None,
+    blog_url: str | None = None,
+    blog_rss_url: str | None = None,
 ) -> None:
     board_url = _BOARD_URL[ats].format(slug=ats_slug)
     conn.execute(
         """
-        INSERT INTO companies (slug, name, ats, ats_slug, board_url, updated_at)
-        VALUES (%s, %s, %s, %s, %s, NOW())
+        INSERT INTO companies (slug, name, ats, ats_slug, board_url,
+                               github_org, blog_url, blog_rss_url, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (slug) DO UPDATE
-            SET ats        = EXCLUDED.ats,
-                ats_slug   = EXCLUDED.ats_slug,
-                board_url  = EXCLUDED.board_url,
-                updated_at = NOW()
+            SET ats          = EXCLUDED.ats,
+                ats_slug     = EXCLUDED.ats_slug,
+                board_url    = EXCLUDED.board_url,
+                github_org   = EXCLUDED.github_org,
+                blog_url     = EXCLUDED.blog_url,
+                blog_rss_url = EXCLUDED.blog_rss_url,
+                updated_at   = NOW()
         """,
-        (slug, name, ats, ats_slug, board_url),
+        (slug, name, ats, ats_slug, board_url, github_org, blog_url, blog_rss_url),
     )
 
 
@@ -200,7 +257,10 @@ async def resolve_and_cache(
             return None
         ats, ats_slug = result
 
-    upsert_company(entry.slug, entry.name, ats, ats_slug, conn)
+    upsert_company(entry.slug, entry.name, ats, ats_slug, conn,
+                   github_org=entry.github_org,
+                   blog_url=entry.blog_url,
+                   blog_rss_url=entry.blog_rss_url)
     return (ats, ats_slug)
 
 
