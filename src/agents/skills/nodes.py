@@ -12,6 +12,7 @@ import pathlib
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
+from typing import Any
 
 import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -364,14 +365,26 @@ def route_outputs(state: SkillsState) -> dict:
 # LLM nodes
 # ---------------------------------------------------------------------------
 
-def extract_one(state: dict) -> dict:
-    """Extract skills, platforms, seniority, and comp from a single posting.
+_EXTRACTION_SYSTEM_PROMPT = (
+    "Extract structured information from job postings. "
+    "Use canonical names: 'Kubernetes' not 'k8s', 'PostgreSQL' not 'postgres', "
+    "'TypeScript' not 'TS', 'JavaScript' not 'JS'. "
+    "For seniority, return exactly one of: senior, staff, principal, junior, ic, manager — "
+    "or null if not determinable. "
+    "For platforms, include cloud providers and infrastructure (AWS, GCP, Azure, Kubernetes, "
+    "Terraform, etc.) — not general-purpose languages or frameworks."
+)
 
-    Receives {"posting": <postings row dict>} from Send.
-    Returns {"extractions": [SkillExtraction]} — merged via operator.add.
+
+def extract_posting_fields(posting: dict[str, Any], llm: Any = None) -> _PostingExtraction:
+    """Run the single-posting skill/platform extraction with the given chat model.
+
+    The model is a parameter so the eval harness can run the *exact* production
+    prompt + schema through different models. Resolved at call time (not as a
+    default-arg binding) so the graph's configured EXTRACTION_LLM stays patchable.
     """
-    posting = state["posting"]
-
+    if llm is None:
+        llm = EXTRACTION_LLM
     text = posting.get("description_text") or ""
     context_parts = [f"Title: {posting.get('title', '')}"]
     if posting.get("department"):
@@ -380,27 +393,30 @@ def extract_one(state: dict) -> dict:
         context_parts.append(f"Team: {posting['team']}")
     context_parts.append(f"\n{text}")
 
-    chain = EXTRACTION_LLM.with_structured_output(_PostingExtraction)
-    llm: _PostingExtraction = chain.invoke([  # type: ignore[assignment]
-        SystemMessage(content=(
-            "Extract structured information from job postings. "
-            "Use canonical names: 'Kubernetes' not 'k8s', 'PostgreSQL' not 'postgres', "
-            "'TypeScript' not 'TS', 'JavaScript' not 'JS'. "
-            "For seniority, return exactly one of: senior, staff, principal, junior, ic, manager — "
-            "or null if not determinable. "
-            "For platforms, include cloud providers and infrastructure (AWS, GCP, Azure, Kubernetes, "
-            "Terraform, etc.) — not general-purpose languages or frameworks."
-        )),
+    chain = llm.with_structured_output(_PostingExtraction)
+    result: _PostingExtraction = chain.invoke([
+        SystemMessage(content=_EXTRACTION_SYSTEM_PROMPT),
         HumanMessage(content="\n".join(context_parts)),
     ])
+    return result
+
+
+def extract_one(state: dict) -> dict:
+    """Extract skills, platforms, seniority, and comp from a single posting.
+
+    Receives {"posting": <postings row dict>} from Send.
+    Returns {"extractions": [SkillExtraction]} — merged via operator.add.
+    """
+    posting = state["posting"]
+    fields = extract_posting_fields(posting)
     extraction = SkillExtraction(
         posting_id=posting["id"],
         ats=posting["ats"],
         company_slug=posting["company_slug"],
-        skills=llm.skills,
-        platforms=llm.platforms,
-        seniority=llm.seniority,
-        years_experience=llm.years_experience,
+        skills=fields.skills,
+        platforms=fields.platforms,
+        seniority=fields.seniority,
+        years_experience=fields.years_experience,
         comp_min=posting.get("compensation_min"),
         comp_max=posting.get("compensation_max"),
         comp_currency=posting.get("compensation_currency"),
