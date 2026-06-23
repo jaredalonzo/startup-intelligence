@@ -127,6 +127,23 @@ def test_normalize_taxonomy_empty_is_noop(monkeypatch):
     assert out == {"normalized_extractions": [], "unknown_skills": []}
 
 
+def test_normalize_taxonomy_accepts_dict_extractions_from_checkpointer(monkeypatch):
+    # Regression: the Postgres checkpointer round-trips the extractions channel
+    # and can hand back plain dicts instead of SkillExtraction. The node must
+    # coerce them, not crash on `extraction.skills`.
+    monkeypatch.setattr(nodes, "_load_aliases", lambda: ({"k8s": "Kubernetes"},
+                                                         frozenset({"Kubernetes"})))
+    dict_ex = _ex(["k8s", "Rust"], ["k8s"]).model_dump()   # checkpointer → dict
+    assert isinstance(dict_ex, dict)
+
+    out = normalize_taxonomy({"extractions": [dict_ex]})
+
+    result = out["normalized_extractions"][0]
+    assert result.skills == ["Kubernetes", "Rust"]
+    assert result.platforms == ["Kubernetes"]
+    assert out["unknown_skills"] == ["Rust"]
+
+
 # ---------------------------------------------------------------------------
 # aggregate_trends — fake empty DB ⇒ no previous window
 # ---------------------------------------------------------------------------
@@ -167,6 +184,21 @@ def test_aggregate_trends_empty_window(monkeypatch):
     report = aggregate_trends({"normalized_extractions": []})["trend_report"]
     assert report.total_postings == 0
     assert report.rising == [] and report.falling == [] and report.new == []
+
+
+def test_aggregate_trends_accepts_dict_extractions_from_checkpointer(monkeypatch):
+    # Regression: normalized_extractions also round-trips the checkpointer, so
+    # aggregate_trends must coerce dicts back to models before reading ex.skills.
+    conn = _FakeConn(rows=[])
+    _patch_conn(monkeypatch, conn)
+    dict_exs = [_ex(["Kubernetes", "Rust"], ["AWS"]).model_dump() for _ in range(3)]
+    assert all(isinstance(d, dict) for d in dict_exs)
+
+    report = aggregate_trends({"normalized_extractions": dict_exs})["trend_report"]
+
+    assert report.total_postings == 3
+    assert {t.skill for t in report.rising} == {"Kubernetes", "Rust"}
+    assert conn.commits == 1     # persisted despite dict inputs
 
 
 # ---------------------------------------------------------------------------

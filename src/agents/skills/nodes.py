@@ -129,6 +129,18 @@ def _normalize_list(
     return normalized, unknowns
 
 
+def _as_extractions(items: list[SkillExtraction]) -> list[SkillExtraction]:
+    """Coerce checkpointer-reloaded extractions back into SkillExtraction models.
+
+    The Postgres checkpointer persists/reloads the `extractions` and
+    `normalized_extractions` channels between super-steps, and JsonPlusSerializer
+    does not reliably reconstruct the Pydantic type across the src-layout import
+    path — items can come back as plain dicts. model_validate accepts a dict or an
+    existing model, so this is a safe boundary coercion for both consumers.
+    """
+    return [SkillExtraction.model_validate(i) for i in items]
+
+
 def normalize_taxonomy(state: SkillsState) -> dict:
     """Apply aliases.yaml to collapse synonyms across all extractions.
 
@@ -142,7 +154,7 @@ def normalize_taxonomy(state: SkillsState) -> dict:
     normalized: list[SkillExtraction] = []
     all_unknowns: list[str] = []
 
-    for extraction in state.get("extractions", []):
+    for extraction in _as_extractions(state.get("extractions", [])):
         norm_skills, skill_unknowns = _normalize_list(extraction.skills, aliases, known)
         norm_platforms, plat_unknowns = _normalize_list(extraction.platforms, aliases, known)
         all_unknowns.extend(skill_unknowns + plat_unknowns)
@@ -235,7 +247,7 @@ def aggregate_trends(state: SkillsState) -> dict:
     previous window to diff against), then queries the previous equal-duration
     window to compute count_previous for each skill/platform. No LLM.
     """
-    extractions = state.get("normalized_extractions") or []
+    extractions = _as_extractions(state.get("normalized_extractions") or [])
     total = len(extractions)
     window_days = SKILLS_DEFAULT_WINDOW_DAYS
 
