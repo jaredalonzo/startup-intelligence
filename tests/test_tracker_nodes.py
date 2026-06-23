@@ -11,7 +11,7 @@ from contextlib import contextmanager
 import pytest
 from langchain_core.messages import AIMessage
 
-from agents.state import BoardResolution
+from agents.tracker.state import BoardResolution
 from agents.tracker import nodes
 from agents.tracker.nodes import _seed_candidates, resolve_board, resolve_one, route_after_resolve
 

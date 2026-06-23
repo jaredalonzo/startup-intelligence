@@ -22,7 +22,7 @@ from agents.skills.nodes import (
     route_outputs,
     synthesize_radar,
 )
-from agents.state import SkillExtraction, SkillTrend, TrendReport
+from agents.skills.state import SkillExtraction, SkillTrend, TrendReport
 
 
 # ---------------------------------------------------------------------------

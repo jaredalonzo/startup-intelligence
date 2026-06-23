@@ -24,7 +24,7 @@ import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel, Field
 
-from agents.state import BoardResolution, TrackerState
+from agents.tracker.state import BoardResolution, TrackerState
 from config import RESOLVE_LLM, TRACKER_RESOLVE_MAX_PROBES
 from ingestion.ats.models import ATSSource
 from ingestion.watchlist import _BOARD_URL, get_cached, probe_ats, upsert_company

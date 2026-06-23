@@ -26,7 +26,7 @@ from langgraph.graph import END, START, StateGraph
 from psycopg import Connection
 from psycopg.rows import dict_row
 
-from agents.state import BoardResolution, TrackerState
+from agents.tracker.state import BoardResolution, TrackerState
 from agents.tracker import nodes
 
 
