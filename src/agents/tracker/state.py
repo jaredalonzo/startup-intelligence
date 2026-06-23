@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from ingestion.ats.models import ATSSource
+
 
 # ---------------------------------------------------------------------------
 # Board resolution (output of resolve_board)
@@ -17,7 +19,7 @@ class BoardResolution(BaseModel):
     """
     company_slug: str
     resolved: bool
-    ats: str | None = None             # 'greenhouse' | 'lever' | 'ashby' | 'workable'
+    ats: ATSSource | None = None       # 'greenhouse' | 'lever' | 'ashby' | 'workable'
     ats_slug: str | None = None        # slug on that ATS (often != company_slug)
     board_url: str | None = None
     method: str | None = None          # 'cache' | 'hint' | 'deterministic' | 'agentic'
@@ -34,7 +36,7 @@ class TrackerState(dict):
     The tracker maps over companies; each invocation handles one company, so
     this state is per-company (not a corpus like SkillsState).
 
-    company:    {name, slug, ats?, ats_slug?, github_org?, blog_url?, domain?}
+    company:    {name, slug, ats?, ats_slug?, github_org?, blog_url?}
                 — a watchlist entry, possibly with no known board yet
     resolution: output of resolve_board; None until that node runs
 

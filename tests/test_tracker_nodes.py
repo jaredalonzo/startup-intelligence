@@ -72,6 +72,45 @@ class FakeLLM:
         return self._bound
 
 
+class _FakeMultiCallBound:
+    """Replays a script of *turns*; each turn is a list of slugs emitted as
+    multiple ProbeCandidate tool calls in a single AIMessage.
+    """
+
+    def __init__(self, turns: list[list[str]]) -> None:
+        self._turns = [list(t) for t in turns]
+        self.invocations = 0
+
+    async def ainvoke(self, messages):
+        self.invocations += 1
+        if not self._turns:
+            return AIMessage(content="done")
+        slugs = self._turns.pop(0)
+        return AIMessage(content="", tool_calls=[
+            {"name": "ProbeCandidate", "args": {"slug": s},
+             "id": f"call_{self.invocations}_{i}", "type": "tool_call"}
+            for i, s in enumerate(slugs)
+        ])
+
+
+class FakeMultiLLM:
+    def __init__(self, turns: list[list[str]]) -> None:
+        self._bound = _FakeMultiCallBound(turns)
+
+    def bind_tools(self, tools):
+        return self._bound
+
+
+class _RaisingLLM:
+    """Bound model whose ainvoke always raises — simulates a provider error."""
+
+    def bind_tools(self, tools):
+        return self
+
+    async def ainvoke(self, messages):
+        raise RuntimeError("provider 500")
+
+
 # ---------------------------------------------------------------------------
 # Deterministic fast-path — no LLM needed
 # ---------------------------------------------------------------------------
@@ -166,6 +205,46 @@ async def test_duplicate_slug_guesses_are_not_reprobed():
     assert res.resolved is True
     # "dead" probed once despite two guesses; "repeatco" seed + "dead" + "realslug".
     assert probe.seen.count("dead") == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_max_probes_bounds_probes_not_turns():
+    # The model emits FOUR guesses in a single turn; max_probes=2 must still cap
+    # the real network probes at 2 (this is the bug a per-turn cap would miss).
+    company = {"name": "X", "slug": "x"}
+    probe = make_probe({})   # nothing resolves
+    llm = FakeMultiLLM([["a", "b", "c", "d"]])
+
+    res = await resolve_one(company, probe=probe, llm=llm, max_probes=2)
+
+    assert res.resolved is False
+    llm_phase = [s for s in probe.seen if s != "x"]   # exclude the "x" seed probe
+    assert llm_phase == ["a", "b"]            # only two probes despite four guesses
+    assert "c" not in probe.seen and "d" not in probe.seen
+
+
+@pytest.mark.asyncio
+async def test_empty_slug_arg_is_skipped_not_probed():
+    company = {"name": "X", "slug": "x"}
+    probe = make_probe({"real": ("lever", "real")})
+    # First turn proposes an empty slug (must be skipped), second finds the board.
+    llm = FakeMultiLLM([[""], ["real"]])
+
+    res = await resolve_one(company, probe=probe, llm=llm)
+
+    assert res.resolved is True
+    assert "" not in probe.seen           # the empty slug was never probed
+
+
+@pytest.mark.asyncio
+async def test_llm_error_degrades_to_unresolved():
+    # A provider error mid-loop must not crash the node — it degrades to unresolved.
+    company = {"name": "X", "slug": "x"}
+    probe = make_probe({})
+
+    res = await resolve_one(company, probe=probe, llm=_RaisingLLM())
+
+    assert res.resolved is False
 
 
 # ---------------------------------------------------------------------------
@@ -312,3 +391,24 @@ async def test_resolve_board_unresolved_is_not_cached(monkeypatch):
 
     assert out["resolution"].resolved is False
     assert conn.commits == 0   # nothing written
+
+
+@pytest.mark.asyncio
+async def test_resolve_board_returns_resolution_when_cache_write_fails(monkeypatch):
+    # A DB error while caching must not discard the (already paid-for) resolution.
+    _patch_conn(monkeypatch, _FakeConn(cached=None))
+
+    async def fake_probe(slug, client):
+        return ("greenhouse", "acme") if slug == "acme" else None
+
+    monkeypatch.setattr(nodes, "probe_ats", fake_probe)
+
+    def _db_down(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(nodes, "upsert_company", _db_down)
+
+    out = await resolve_board({"company": {"slug": "acme", "name": "Acme"}})
+
+    assert out["resolution"].resolved is True   # resolution survives the write failure
+    assert out["resolution"].ats == "greenhouse"

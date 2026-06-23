@@ -17,6 +17,7 @@ Design (per the repo's "do not agentify deterministic work" principle):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Awaitable, Callable, Literal
 
@@ -54,7 +55,7 @@ _SYSTEM_PROMPT = (
     "Workable. You cannot browse the web — instead, propose a candidate slug and "
     "call ProbeCandidate to test it against the real ATS endpoints. Iterate: when "
     "a probe misses, reason about a better slug (drop or add suffixes like 'labs', "
-    "'hq', 'ai', 'inc'; try the website domain root or the product name; collapse "
+    "'hq', 'ai', 'inc'; try the product name or the GitHub org if given; collapse "
     "spaces) and probe again. Slugs are lowercase with no spaces or punctuation. "
     "Stop the moment a probe succeeds. If several probes fail, stop — do not guess "
     "endlessly."
@@ -81,8 +82,6 @@ def _describe_company(company: dict, *, already_tried: list[str]) -> str:
         f"Company name: {company.get('name')}",
         f"Internal key: {company.get('slug')}",
     ]
-    if company.get("domain"):
-        lines.append(f"Website domain: {company['domain']}")
     if company.get("github_org"):
         lines.append(f"GitHub org: {company['github_org']}")
     if already_tried:
@@ -135,19 +134,35 @@ async def resolve_one(
             return _resolved(slug, hit[0], hit[1], method, attempted)
 
     # 2. Agentic escalation — the LLM proposes slugs; the probe tool verifies them.
+    #    max_probes bounds the number of *real* network probes, not LLM turns: a
+    #    model may emit several ProbeCandidate calls in one turn, and the cost cap
+    #    must hold regardless. range(max_probes) also caps turns, so a degenerate
+    #    model that only emits empty/duplicate slugs still terminates.
     llm_with_tools = llm.bind_tools([ProbeCandidate])
     messages: list = [
         SystemMessage(content=_SYSTEM_PROMPT),
         HumanMessage(content=_describe_company(company, already_tried=attempted)),
     ]
+    probes = 0
     for _ in range(max_probes):
-        ai: AIMessage = await llm_with_tools.ainvoke(messages)
+        if probes >= max_probes:
+            break
+        try:
+            ai: AIMessage = await llm_with_tools.ainvoke(messages)
+        except Exception:
+            # A provider error shouldn't abort the whole per-company pipeline;
+            # degrade to "unresolved" so the map over companies keeps going.
+            logger.exception("resolve_board: LLM call failed for %s; giving up", slug)
+            break
         messages.append(ai)
         if not ai.tool_calls:
             break
         for call in ai.tool_calls:
             cand = str(call["args"].get("slug", ""))
+            before = len(attempted)
             hit = await _probe(cand)
+            if len(attempted) > before:   # _probe only appends on a real network probe
+                probes += 1
             if hit:
                 # A verified board is ground truth — return without trusting the LLM further.
                 return _resolved(slug, hit[0], hit[1], "agentic", attempted)
@@ -158,11 +173,37 @@ async def resolve_one(
                     tool_call_id=call["id"],
                 )
             )
+            if probes >= max_probes:
+                break
 
     logger.warning("resolve_board: no ATS board found for %s (tried: %s)", slug, attempted)
     return BoardResolution(
         company_slug=slug, resolved=False, method="agentic", attempted_slugs=attempted
     )
+
+
+def _read_cache(slug: str) -> dict | None:  # type: ignore[type-arg]
+    """Synchronous cache lookup. Run via asyncio.to_thread from the async node."""
+    with get_connection() as conn:
+        return get_cached(slug, conn)
+
+
+def _write_cache(company: dict, resolution: BoardResolution) -> None:
+    """Synchronous cache write. Run via asyncio.to_thread from the async node."""
+    if resolution.ats is None or resolution.ats_slug is None:
+        return  # `resolved` implies these are set; defensive, and keeps types honest
+    with get_connection() as conn:
+        upsert_company(
+            company["slug"],
+            company["name"],
+            resolution.ats,
+            resolution.ats_slug,
+            conn,
+            github_org=company.get("github_org"),
+            blog_url=company.get("blog_url"),
+            blog_rss_url=company.get("blog_rss_url"),
+        )
+        conn.commit()
 
 
 async def resolve_board(state: TrackerState) -> dict:
@@ -171,16 +212,16 @@ async def resolve_board(state: TrackerState) -> dict:
     Conditional skip: if the board is already cached in the companies table, return
     immediately — no probing, no LLM call (the one-time-cost guarantee). Otherwise
     run resolve_one and, on success, cache the result so future runs hit the cache.
+
+    DB work is sync (psycopg); it runs in a worker thread so it never blocks the
+    event loop while the tracker maps over companies.
     """
     company = state["company"]
     slug = company["slug"]
 
-    with get_connection() as conn:
-        cached = get_cached(slug, conn)
+    cached = await asyncio.to_thread(_read_cache, slug)
     if cached:
-        ats: ATSSource = cached["ats"]
-        ats_slug: str = cached["ats_slug"]
-        return {"resolution": _resolved(slug, ats, ats_slug, "cache", [])}
+        return {"resolution": _resolved(slug, cached["ats"], cached["ats_slug"], "cache", [])}
 
     async with httpx.AsyncClient() as client:
         resolution = await resolve_one(
@@ -190,21 +231,16 @@ async def resolve_board(state: TrackerState) -> dict:
         )
 
     if resolution.resolved:
-        assert resolution.ats is not None and resolution.ats_slug is not None
-        with get_connection() as conn:
-            upsert_company(
-                slug,
-                company["name"],
-                resolution.ats,  # type: ignore[arg-type]
-                resolution.ats_slug,
-                conn,
-                github_org=company.get("github_org"),
-                blog_url=company.get("blog_url"),
-                blog_rss_url=company.get("blog_rss_url"),
+        try:
+            await asyncio.to_thread(_write_cache, company, resolution)
+            logger.info("resolve_board: %s -> %s/%s (%s)", slug, resolution.ats,
+                        resolution.ats_slug, resolution.method)
+        except Exception:
+            # A failed cache write must not discard a resolution we already paid
+            # the LLM/probe cost for — return it; next run will re-resolve and retry.
+            logger.exception(
+                "resolve_board: failed to cache %s; returning resolution uncached", slug
             )
-            conn.commit()
-        logger.info("resolve_board: %s -> %s/%s (%s)", slug, resolution.ats,
-                    resolution.ats_slug, resolution.method)
 
     return {"resolution": resolution}
 
