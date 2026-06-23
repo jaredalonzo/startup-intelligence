@@ -30,9 +30,11 @@ from pydantic import BaseModel
 from agents.tracker.state import DossierInputs, TrackerState, TrendScore
 from config import (
     SYNTHESIS_LLM,
+    TRACKER_ACCEL_BAND,
+    TRACKER_COOL_BAND,
     TRACKER_DOSSIER_SNAPSHOT_LOOKBACK,
+    TRACKER_SCORE_CAPS,
     TRACKER_SCORE_WEIGHTS,
-    TRACKER_TOP_MOVER_COMPOSITE,
 )
 from outputs.notion import upsert_company_dossier
 from store.db import get_connection
@@ -98,19 +100,20 @@ def load_signals(state: TrackerState) -> dict:
 
         latest = snaps[0] if snaps else None
         prev = snaps[1] if len(snaps) > 1 else None
+        oldest = snaps[-1] if len(snaps) > 1 else None    # window start for the trend
         prev_at = prev["snapshot_at"] if prev else None
         since_at = latest["snapshot_at"] if latest else None
 
         # Currently-live postings = those seen on the most recent ingestion run.
         if since_at is not None:
             postings = db.execute(
-                "SELECT title, department, seniority FROM postings "
+                "SELECT title, department FROM postings "
                 "WHERE company_slug = %s AND last_seen_at >= %s",
                 (slug, since_at),
             ).fetchall()
         else:
             postings = db.execute(
-                "SELECT title, department, seniority FROM postings WHERE company_slug = %s",
+                "SELECT title, department FROM postings WHERE company_slug = %s",
                 (slug,),
             ).fetchall()
 
@@ -134,7 +137,6 @@ def load_signals(state: TrackerState) -> dict:
         ).fetchall()
 
     dept_counts = Counter(p["department"] for p in postings if p.get("department"))
-    sen_counts = Counter(p["seniority"] for p in postings if p.get("seniority"))
 
     new_blog_count = _count_since(blog_rows, prev_at)
     new_release_count = _count_since(release_rows, prev_at)
@@ -148,15 +150,22 @@ def load_signals(state: TrackerState) -> dict:
             latest["posting_count"] if latest else None,
             prev["posting_count"] if prev else None,
         ),
+        posting_count_window_delta=_delta(
+            latest["posting_count"] if latest else None,
+            oldest["posting_count"] if oldest else None,
+        ),
         eng_count=latest["eng_count"] if latest else None,
         eng_count_delta=_delta(
             latest["eng_count"] if latest else None,
             prev["eng_count"] if prev else None,
         ),
+        eng_count_window_delta=_delta(
+            latest["eng_count"] if latest else None,
+            oldest["eng_count"] if oldest else None,
+        ),
         new_postings=len(latest["new_ids"]) if latest else 0,
         removed_postings=len(latest["removed_ids"]) if latest else 0,
         open_by_department=dept_counts.most_common(8),
-        open_by_seniority=sen_counts.most_common(),
         sample_titles=[p["title"] for p in postings[:8]],
         recent_releases=[
             {"repo": r["repo"], "tag": r["release_tag"], "name": r["release_name"],
@@ -227,13 +236,14 @@ def _build_dossier_prompt(s: DossierInputs) -> str:
 Snapshots of history available: {s.snapshots_available}
 
 HEADCOUNT / HIRING VELOCITY (eng-weighted; a proxy, not true headcount):
-  Total live postings: {s.posting_count} (change vs previous run: {s.posting_count_delta})
-  Eng/product/data postings: {s.eng_count} (change: {s.eng_count_delta})
+  Total live postings: {s.posting_count} (run-over-run: {s.posting_count_delta}, \
+over tracked window: {s.posting_count_window_delta})
+  Eng/product/data postings: {s.eng_count} (run-over-run: {s.eng_count_delta}, \
+over tracked window: {s.eng_count_window_delta})
   Roles opened this run: {s.new_postings}; closed: {s.removed_postings}
 
 OPEN POSITIONS:
   By department: {_format_pairs(s.open_by_department)}
-  By seniority: {_format_pairs(s.open_by_seniority)}
   Sample titles:
 {titles}
 
@@ -294,62 +304,106 @@ def synthesize_dossier(state: TrackerState) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# score_trending (deterministic composite + LLM judgment flag)
+# score_trending (deterministic composite + classification; LLM rationale only)
 # ---------------------------------------------------------------------------
 
-class _TrendJudgment(BaseModel):
-    """The LLM's qualitative read on the company's momentum."""
-    classification: Literal["accelerating", "steady", "cooling"]
+class _TrendRationale(BaseModel):
+    """The LLM's one-sentence explanation of the (deterministic) classification."""
     rationale: str
 
 
+def _growth(curr: int | None, window_delta: int | None) -> float:
+    """Window growth rate: delta / base, where base is the value at window start.
+
+    Returns 0.0 when there's no prior window or the base is non-positive — a
+    company we can't yet measure a trend for contributes nothing, rather than a
+    spurious spike.
+    """
+    if curr is None or window_delta is None:
+        return 0.0
+    base = curr - window_delta
+    return window_delta / base if base > 0 else 0.0
+
+
 def _composite(s: DossierInputs) -> float:
+    """Bounded, hiring-led momentum index (~0-100). Each component is normalized
+    so no single signal can saturate the score; activity terms are capped.
+
+    Hiring carries the most weight by design (it's the core growth proxy) and
+    will dominate once snapshot history is deep; the GitHub/blog activity terms
+    corroborate it. See TRACKER_SCORE_WEIGHTS / _CAPS for the calibration.
+    """
     w = TRACKER_SCORE_WEIGHTS
+    caps = TRACKER_SCORE_CAPS
     star_growth = sum(d for _, d in s.star_delta_by_repo)
-    return (
-        w["eng_velocity"] * (s.eng_count_delta or 0)
-        + w["posting_growth"] * (s.posting_count_delta or 0)
-        + w["release_cadence"] * s.new_release_count
-        + w["blog_cadence"] * s.new_blog_count
-        + w["star_growth"] * (star_growth / 100.0)
+
+    eng_growth = _growth(s.eng_count, s.eng_count_window_delta)
+    post_growth = _growth(s.posting_count, s.posting_count_window_delta)
+    release_act = min(s.new_release_count, caps["release_cadence"]) / caps["release_cadence"]
+    blog_act = min(s.new_blog_count, caps["blog_cadence"]) / caps["blog_cadence"]
+    star_act = max(-1.0, min(star_growth / caps["star_growth"], 1.0))
+
+    raw = (
+        w["eng_velocity"] * eng_growth
+        + w["posting_growth"] * post_growth
+        + w["release_cadence"] * release_act
+        + w["blog_cadence"] * blog_act
+        + w["star_growth"] * star_act
     )
+    return round(100.0 * raw, 2)
+
+
+def _classify(composite: float) -> tuple[Literal["accelerating", "steady", "cooling"], bool]:
+    """Map the composite onto a band. A company is a top mover iff accelerating,
+    so the deterministic flag can never contradict the label (the live-run bug).
+    """
+    if composite >= TRACKER_ACCEL_BAND:
+        return "accelerating", True
+    if composite <= TRACKER_COOL_BAND:
+        return "cooling", False
+    return "steady", False
 
 
 def score_trending(state: TrackerState) -> dict:
-    """Produce a composite momentum score (deterministic) plus an LLM judgment flag."""
+    """Composite momentum score + classification (both deterministic); the LLM
+    only writes the rationale prose, so it cannot disagree with the score.
+    """
     signals = state.get("signals")
     if signals is None:
         return {}
 
     composite = _composite(signals)
-    is_top_mover = composite >= TRACKER_TOP_MOVER_COMPOSITE
+    classification, is_top_mover = _classify(composite)
 
-    judge = SYNTHESIS_LLM.with_structured_output(_TrendJudgment)
-    judgment: _TrendJudgment = judge.invoke([  # type: ignore[assignment]
+    explain = SYNTHESIS_LLM.with_structured_output(_TrendRationale)
+    out: _TrendRationale = explain.invoke([  # type: ignore[assignment]
         SystemMessage(content=(
-            "Classify a startup's near-term momentum as accelerating, steady, or cooling "
-            "from its hiring and engineering-activity deltas. Give a one-sentence rationale."
+            "A startup's momentum has already been classified as accelerating, steady, or "
+            "cooling from its hiring and engineering-activity deltas. In one sentence, explain "
+            "why that label fits, citing the deltas. Do not contradict the given classification."
         )),
         HumanMessage(content=(
             f"Company: {signals.company_name}\n"
-            f"Eng postings delta: {signals.eng_count_delta}\n"
-            f"Total postings delta: {signals.posting_count_delta}\n"
+            f"Classification: {classification} (composite score {composite:.1f})\n"
+            f"Eng postings — run-over-run: {signals.eng_count_delta}, "
+            f"over window: {signals.eng_count_window_delta}\n"
+            f"Total postings — run-over-run: {signals.posting_count_delta}, "
+            f"over window: {signals.posting_count_window_delta}\n"
             f"Roles opened/closed this run: {signals.new_postings}/{signals.removed_postings}\n"
             f"New releases: {signals.new_release_count}; new blog posts: {signals.new_blog_count}\n"
-            f"Star deltas: {signals.star_delta_by_repo}\n"
-            f"Deterministic composite score: {composite:.2f}"
+            f"Star deltas: {signals.star_delta_by_repo}"
         )),
     ])
 
     score = TrendScore(
         composite=composite,
-        classification=judgment.classification,
-        rationale=judgment.rationale,
+        classification=classification,
+        rationale=out.rationale,
         is_top_mover=is_top_mover,
     )
     logger.info(
         "score_trending: %s — composite=%.2f, %s, top_mover=%s",
-        signals.company_slug, composite, judgment.classification, is_top_mover,
+        signals.company_slug, composite, classification, is_top_mover,
     )
     return {"trend_score": score}
 

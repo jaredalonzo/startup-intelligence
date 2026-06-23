@@ -59,15 +59,19 @@ class DossierInputs(BaseModel):
     company_name: str
     snapshots_available: int                      # how many snapshots back the series goes
 
-    # Headcount proxy + open positions (from snapshots + live postings)
+    # Headcount proxy + open positions (from snapshots + live postings).
+    # `_delta` fields are run-over-run (what changed this run); `_window_delta`
+    # fields are latest-vs-oldest loaded snapshot (the trend score leans on these,
+    # since adjacent-snapshot hiring deltas are too noisy to score on).
     posting_count: int | None = None
     posting_count_delta: int | None = None
+    posting_count_window_delta: int | None = None
     eng_count: int | None = None
     eng_count_delta: int | None = None
+    eng_count_window_delta: int | None = None
     new_postings: int = 0                          # len(new_ids) on the latest snapshot
     removed_postings: int = 0                      # len(removed_ids) on the latest snapshot
     open_by_department: list[tuple[str, int]] = Field(default_factory=list)
-    open_by_seniority: list[tuple[str, int]] = Field(default_factory=list)
     sample_titles: list[str] = Field(default_factory=list)
 
     # Technology / product (GitHub releases + star trajectory)

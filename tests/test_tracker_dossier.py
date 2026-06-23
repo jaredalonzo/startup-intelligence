@@ -12,13 +12,15 @@ from datetime import datetime, timezone
 
 from agents.tracker import dossier
 from agents.tracker.dossier import (
+    _classify,
     _composite,
+    _growth,
     load_signals,
     route_after_signals,
     score_trending,
     synthesize_dossier,
     write_dossier,
-    _TrendJudgment,
+    _TrendRationale,
 )
 from agents.tracker.state import DossierInputs, TrendScore
 
@@ -76,10 +78,11 @@ def _company() -> dict:
 
 def _signals(**over) -> DossierInputs:
     base = dict(
-        company_slug="anthropic", company_name="Anthropic", snapshots_available=2,
-        posting_count=10, posting_count_delta=6, eng_count=6, eng_count_delta=4,
-        new_postings=2, removed_postings=0, new_release_count=1, new_blog_count=2,
-        star_delta_by_repo=[("anthropics/sdk", 300)],
+        company_slug="anthropic", company_name="Anthropic", snapshots_available=8,
+        posting_count=200, posting_count_delta=6, posting_count_window_delta=20,
+        eng_count=130, eng_count_delta=4, eng_count_window_delta=30,
+        new_postings=2, removed_postings=0, new_release_count=4, new_blog_count=3,
+        star_delta_by_repo=[("anthropics/sdk", 500)],
     )
     base.update(over)
     return DossierInputs(**base)
@@ -117,9 +120,10 @@ def test_load_signals_assembles_deltas_and_flags_change(monkeypatch):
     assert out["meaningful_change"] is True
     assert (s.posting_count, s.posting_count_delta) == (10, 3)
     assert (s.eng_count, s.eng_count_delta) == (6, 2)
+    # only two snapshots loaded, so oldest == prev ⇒ window delta equals run delta
+    assert (s.posting_count_window_delta, s.eng_count_window_delta) == (3, 2)
     assert (s.new_postings, s.removed_postings) == (2, 0)
     assert s.open_by_department == [("Eng", 2), ("People", 1)]
-    assert ("staff", 1) in s.open_by_seniority
     assert s.star_delta_by_repo == [("anthropics/sdk", 300)]
     # first_seen_at on the blog/release rows is at/after the previous snapshot ⇒ new
     assert s.new_blog_count == 1 and s.new_release_count == 1
@@ -211,7 +215,8 @@ def test_synthesize_dossier_builds_prompt_from_signals(monkeypatch):
     assert out["dossier_markdown"] == "## Summary\nGrowing fast"
     prompt = fake.received[1].content
     assert "Anthropic" in prompt
-    assert "change vs previous run: 6" in prompt   # posting_count_delta surfaced
+    assert "run-over-run: 6" in prompt             # posting_count_delta surfaced
+    assert "over tracked window: 20" in prompt     # window delta surfaced
     assert "pending" in prompt.lower()             # customers metric noted, not invented
 
 
@@ -219,9 +224,26 @@ def test_synthesize_dossier_builds_prompt_from_signals(monkeypatch):
 # score_trending — deterministic composite + LLM judgment flag
 # ---------------------------------------------------------------------------
 
-def test_composite_is_deterministic_weighted_sum():
-    # 1.0*4 + 0.5*6 + 2.0*1 + 1.5*2 + 1.0*(300/100) = 4+3+2+3+3 = 15.0
-    assert _composite(_signals()) == 15.0
+def test_growth_rate_and_edges():
+    # 30 added on a window-start base of (130-30)=100 ⇒ 0.30 growth
+    assert _growth(130, 30) == 0.30
+    assert _growth(None, 5) == 0.0          # no current value
+    assert _growth(100, None) == 0.0        # no prior window
+    assert _growth(5, 10) == 0.0            # base <= 0 ⇒ no spurious spike
+
+
+def test_composite_is_bounded_hiring_led_sum():
+    # eng 0.45*(30/100)=0.135; post 0.20*(20/180)=0.022222; release 0.15*(4/8)=0.075;
+    # blog 0.10*(3/6)=0.05; star 0.10*(500/1000)=0.05 → 0.332222 *100 = 33.22
+    assert _composite(_signals()) == 33.22
+
+
+def test_classify_bands():
+    assert _classify(25.0) == ("accelerating", True)
+    assert _classify(12.0) == ("accelerating", True)    # boundary is inclusive
+    assert _classify(5.0) == ("steady", False)
+    assert _classify(-3.0) == ("cooling", False)        # boundary is inclusive
+    assert _classify(-10.0) == ("cooling", False)
 
 
 class _FakeChain:
@@ -232,36 +254,37 @@ class _FakeChain:
         return self._result
 
 
-class _FakeJudgeLLM:
+class _FakeRationaleLLM:
     def __init__(self, result):
         self._result = result
 
     def with_structured_output(self, schema):
-        assert schema is _TrendJudgment
+        assert schema is _TrendRationale
         return _FakeChain(self._result)
 
 
-def test_score_trending_combines_composite_and_judgment(monkeypatch):
-    judgment = _TrendJudgment(classification="accelerating", rationale="hiring surge")
-    monkeypatch.setattr(dossier, "SYNTHESIS_LLM", _FakeJudgeLLM(judgment))
+def test_score_trending_classifies_deterministically_with_llm_rationale(monkeypatch):
+    # The LLM only supplies the rationale; classification/top_mover are deterministic,
+    # so the label can never contradict the score (the live-run bug this fixes).
+    monkeypatch.setattr(dossier, "SYNTHESIS_LLM",
+                        _FakeRationaleLLM(_TrendRationale(rationale="hiring + release surge")))
 
-    out = score_trending({"signals": _signals()})
-    score: TrendScore = out["trend_score"]
+    score: TrendScore = score_trending({"signals": _signals()})["trend_score"]
 
-    assert score.composite == 15.0
-    assert score.classification == "accelerating"
-    assert score.rationale == "hiring surge"
-    assert score.is_top_mover is True            # 15.0 >= TRACKER_TOP_MOVER_COMPOSITE (5.0)
+    assert score.composite == 33.22
+    assert score.classification == "accelerating"        # 33.22 >= ACCEL band (12.0)
+    assert score.is_top_mover is True
+    assert score.rationale == "hiring + release surge"
 
 
-def test_score_trending_below_threshold_is_not_top_mover(monkeypatch):
-    judgment = _TrendJudgment(classification="cooling", rationale="quiet")
-    monkeypatch.setattr(dossier, "SYNTHESIS_LLM", _FakeJudgeLLM(judgment))
+def test_score_trending_quiet_company_is_steady(monkeypatch):
+    monkeypatch.setattr(dossier, "SYNTHESIS_LLM",
+                        _FakeRationaleLLM(_TrendRationale(rationale="quiet")))
 
-    quiet = _signals(eng_count_delta=0, posting_count_delta=1, new_release_count=0,
-                     new_blog_count=0, star_delta_by_repo=[])
+    quiet = _signals(eng_count_window_delta=0, posting_count_window_delta=1,
+                     new_release_count=0, new_blog_count=0, star_delta_by_repo=[])
     score = score_trending({"signals": quiet})["trend_score"]
-    assert score.composite == 0.5 and score.is_top_mover is False
+    assert score.classification == "steady" and score.is_top_mover is False
 
 
 # ---------------------------------------------------------------------------
