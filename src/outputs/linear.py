@@ -1,0 +1,181 @@
+"""Linear output writers for the startup tracker and the skills agent.
+
+Creates engineering tasks from agent findings: a per-company "top mover" task
+when the tracker flags accelerating momentum, and per-skill "skill gap" tasks
+when the skills radar surfaces a skill above the gap threshold.
+
+Mirrors outputs/notion.py: a thin client over the public API (Linear's GraphQL
+endpoint), driven by LINEAR_API_KEY, with the destination team/project pinned in
+config. Writes are **idempotent** — issues are keyed by a deterministic title, so
+a re-run updates the existing task in place rather than spawning duplicates
+(the same find-or-create idea as the Notion dossier upsert). The `client` is
+injectable so tests never hit the network.
+
+These writers take primitives, not agent state objects, so outputs/ stays a leaf
+module that the agents depend on (never the reverse).
+"""
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any
+
+import httpx
+
+from config import LINEAR_PROJECT_ID, LINEAR_TEAM_ID
+
+logger = logging.getLogger(__name__)
+
+_LINEAR_API = "https://api.linear.app/graphql"
+
+
+def _headers() -> dict[str, str]:
+    # Linear personal API keys go in Authorization directly (no "Bearer" prefix).
+    return {
+        "Authorization": os.environ["LINEAR_API_KEY"],
+        "Content-Type": "application/json",
+    }
+
+
+def _graphql(client: httpx.Client, query: str, variables: dict) -> dict:  # type: ignore[type-arg]
+    """POST a GraphQL operation; raise on transport or GraphQL-level errors."""
+    resp = client.post(_LINEAR_API, headers=_headers(), json={"query": query, "variables": variables})
+    resp.raise_for_status()
+    body = resp.json()
+    if body.get("errors"):
+        raise RuntimeError(f"Linear GraphQL error: {body['errors']}")
+    data: dict[str, Any] = body["data"]
+    return data
+
+
+_FIND_ISSUE = """
+query FindIssue($filter: IssueFilter) {
+  issues(filter: $filter, first: 1) {
+    nodes { id identifier url }
+  }
+}
+"""
+
+_CREATE_ISSUE = """
+mutation CreateIssue($input: IssueCreateInput!) {
+  issueCreate(input: $input) {
+    success
+    issue { id identifier url }
+  }
+}
+"""
+
+_UPDATE_ISSUE = """
+mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) {
+    success
+    issue { id identifier url }
+  }
+}
+"""
+
+
+def _find_open_issue(client: httpx.Client, title: str) -> dict | None:  # type: ignore[type-arg]
+    """Return the existing non-completed/non-canceled issue with this exact title
+    in the configured team, or None. Completed/canceled tasks are ignored so a
+    finding that recurs after the work was closed opens a fresh task."""
+    data = _graphql(client, _FIND_ISSUE, {
+        "filter": {
+            "team": {"id": {"eq": LINEAR_TEAM_ID}},
+            "title": {"eq": title},
+            "state": {"type": {"nin": ["completed", "canceled"]}},
+        },
+    })
+    nodes = data["issues"]["nodes"]
+    return nodes[0] if nodes else None
+
+
+def _upsert_issue(title: str, description: str, *, client: httpx.Client) -> str:
+    """Create the issue, or update its body in place if one with this title is
+    already open. Returns the issue's human identifier (e.g. 'JAR-72')."""
+    existing = _find_open_issue(client, title)
+    if existing is not None:
+        data = _graphql(client, _UPDATE_ISSUE, {
+            "id": existing["id"],
+            "input": {"description": description},
+        })
+        issue = data["issueUpdate"]["issue"]
+        logger.info("linear: updated %s — %s", issue["identifier"], title)
+        return str(issue["identifier"])
+
+    data = _graphql(client, _CREATE_ISSUE, {
+        "input": {
+            "teamId": LINEAR_TEAM_ID,
+            "projectId": LINEAR_PROJECT_ID,
+            "title": title,
+            "description": description,
+        },
+    })
+    issue = data["issueCreate"]["issue"]
+    logger.info("linear: created %s — %s", issue["identifier"], title)
+    return str(issue["identifier"])
+
+
+# ---------------------------------------------------------------------------
+# Tracker — top-mover task (one living task per accelerating company)
+# ---------------------------------------------------------------------------
+
+def create_top_mover_task(
+    *,
+    company_name: str,
+    company_slug: str,
+    composite: float,
+    classification: str,
+    rationale: str,
+    dossier_url: str | None = None,
+    client: httpx.Client | None = None,
+) -> str:
+    """Create/update the Linear task flagging a company as a top mover."""
+    title = f"[Top mover] {company_name}"
+    lines = [
+        f"**{company_name}** (`{company_slug}`) is a top mover — "
+        f"composite **{composite:.1f}**, classified **{classification}**.",
+        "",
+        f"_{rationale}_",
+    ]
+    if dossier_url:
+        lines += ["", f"Dossier: {dossier_url}"]
+    lines += ["", "—", "_Auto-generated by the startup tracker; updated in place each run._"]
+
+    owns_client = client is None
+    client = client or httpx.Client()
+    try:
+        return _upsert_issue(title, "\n".join(lines), client=client)
+    finally:
+        if owns_client:
+            client.close()
+
+
+# ---------------------------------------------------------------------------
+# Skills agent — gap tasks (one living task per skill above the gap threshold)
+# ---------------------------------------------------------------------------
+
+def create_gap_tasks(
+    gap_skills: list[tuple[str, float]],
+    *,
+    client: httpx.Client | None = None,
+) -> list[str]:
+    """Create/update one Linear task per gap skill. `gap_skills` is a list of
+    (skill, pct_of_postings). Returns the created/updated issue identifiers."""
+    owns_client = client is None
+    client = client or httpx.Client()
+    try:
+        identifiers: list[str] = []
+        for skill, pct in gap_skills:
+            title = f"[Skill gap] {skill}"
+            description = (
+                f"**{skill}** appears in **{pct:.0%}** of recent engineering "
+                f"postings across the watchlist — a likely skill gap for the "
+                f"target roles (FDE / TAM / CSE / Implementation).\n\n"
+                f"—\n_Auto-generated by the skills radar; updated in place each run._"
+            )
+            identifiers.append(_upsert_issue(title, description, client=client))
+        return identifiers
+    finally:
+        if owns_client:
+            client.close()

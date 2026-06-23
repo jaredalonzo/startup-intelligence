@@ -53,12 +53,15 @@ from agents.tracker import dossier as dossier_mod
 from agents.tracker.graph import compile_graph
 from agents.tracker.state import BoardResolution, DossierInputs, TrendScore
 from ingestion.watchlist import COMPANIES
+from observability import init_tracing
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 log = logging.getLogger(__name__)
+
+init_tracing()
 
 
 @asynccontextmanager

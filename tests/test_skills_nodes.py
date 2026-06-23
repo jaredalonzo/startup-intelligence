@@ -6,7 +6,6 @@ and fake models so no live DB / LLM / network is required.
 """
 from __future__ import annotations
 
-import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -174,23 +173,25 @@ def test_aggregate_trends_empty_window(monkeypatch):
 # route_outputs — Notion write + gap-task logging
 # ---------------------------------------------------------------------------
 
-def test_route_outputs_writes_digest_and_logs_gaps(monkeypatch, caplog):
+def test_route_outputs_writes_digest_and_creates_gap_tasks(monkeypatch):
     written: list[str] = []
     monkeypatch.setattr(nodes, "write_skills_digest",
                         lambda digest, *a, **k: written.append(digest) or "http://notion/x")
+    gap_calls: list[list] = []
+    monkeypatch.setattr(nodes, "create_gap_tasks",
+                        lambda skills, *a, **k: gap_calls.append(skills) or ["JAR-1"])
 
     trend = SkillTrend(skill="Kubernetes", count_current=10, count_previous=2,
                        delta=8, pct_of_postings=0.5)   # well above 15% gap threshold
     report = TrendReport(window_days=30, total_postings=20, rising=[trend],
                          falling=[], new=[], top_platforms=[], co_occurrences=[])
 
-    with caplog.at_level(logging.INFO, logger="agents.skills.nodes"):
-        out = route_outputs({"radar_digest": "## Heading\n- point", "trend_report": report})
+    out = route_outputs({"radar_digest": "## Heading\n- point", "trend_report": report})
 
     assert out == {}
     assert written == ["## Heading\n- point"]
-    assert "Gap tasks to create" in caplog.text
-    assert "Kubernetes" in caplog.text
+    # the gap skill is passed through to the Linear writer as (skill, pct)
+    assert gap_calls == [[("Kubernetes", 0.5)]]
 
 
 def test_route_outputs_skips_notion_when_no_digest(monkeypatch):

@@ -22,12 +22,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agents.skills.graph import compile_graph, make_checkpointer
+from observability import init_tracing
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 log = logging.getLogger(__name__)
+
+init_tracing()
 
 _THREAD_ID = "skills-agent"
 

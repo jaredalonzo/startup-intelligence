@@ -1,4 +1,6 @@
 """Central configuration — model objects, thresholds, and tunables."""
+import os
+
 # To switch to Anthropic: swap the two import lines and update the model strings below.
 # from langchain_anthropic import ChatAnthropic
 from langchain_ollama import ChatOllama
@@ -89,3 +91,23 @@ TRACKER_SCORE_CAPS = {
 # can never contradict the label. Calibrated against the live distribution.
 TRACKER_ACCEL_BAND = 12.0
 TRACKER_COOL_BAND = -3.0
+
+# ---------------------------------------------------------------------------
+# Outputs — Linear (outputs/linear.py)
+# ---------------------------------------------------------------------------
+
+# Destination for agent-created issues, in the "Jared Alonzo" (JAR) team's
+# "Startup & Skills Intelligence Agents" project. Defaults are the discovered
+# workspace IDs (not secrets); override per-environment via env if needed.
+# LINEAR_API_KEY is read from the environment in outputs/linear.py (secret).
+LINEAR_TEAM_ID = os.getenv("LINEAR_TEAM_ID", "4249174f-4fad-4957-b406-93a4fd30ec2c")
+LINEAR_PROJECT_ID = os.getenv("LINEAR_PROJECT_ID", "a147d3f0-638d-4ba9-af05-dc15fdc7d9e8")
+
+# ---------------------------------------------------------------------------
+# Observability — LangSmith tracing (observability.py)
+# ---------------------------------------------------------------------------
+
+# LangSmith project the two graphs' traces land in. Tracing is enabled by the
+# run entrypoints via observability.init_tracing(), and only when
+# LANGSMITH_API_KEY is present in the environment.
+LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "startup-intelligence")

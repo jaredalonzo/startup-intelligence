@@ -28,6 +28,7 @@ from config import (
     SYNTHESIS_LLM,
     TARGET_ROLES,
 )
+from outputs.linear import create_gap_tasks
 from outputs.notion import write_skills_digest
 from store.db import get_connection
 
@@ -298,10 +299,10 @@ def aggregate_trends(state: SkillsState) -> dict:
 
 
 def route_outputs(state: SkillsState) -> dict:
-    """Write the radar digest to Notion and create Linear gap tasks if thresholds crossed.
+    """Write the radar digest to Notion and open/refresh Linear gap tasks.
 
     Gap skills are any skill/platform whose pct_of_postings >= SKILLS_GAP_TASK_THRESHOLD_PCT.
-    Notion write and Linear task creation are stubbed here; wired in M4 (outputs/).
+    Each external write is guarded so an outputs failure doesn't lose the whole run.
     """
     digest = state.get("radar_digest") or ""
     report = state.get("trend_report")
@@ -309,8 +310,11 @@ def route_outputs(state: SkillsState) -> dict:
     logger.info("=== SKILLS RADAR DIGEST ===\n%s", digest)
 
     if digest:
-        page_url = write_skills_digest(digest)
-        logger.info("Skills radar digest written to Notion: %s", page_url)
+        try:
+            page_url = write_skills_digest(digest)
+            logger.info("Skills radar digest written to Notion: %s", page_url)
+        except Exception:
+            logger.exception("route_outputs: Notion digest write failed")
 
     if report:
         all_trends = report.rising + report.falling + report.top_platforms
@@ -323,18 +327,23 @@ def route_outputs(state: SkillsState) -> dict:
 
         if gap_skills:
             logger.info(
-                "Gap tasks to create in Linear (%d skills above %.0f%% threshold): %s",
+                "Creating Linear gap tasks (%d skills above %.0f%% threshold): %s",
                 len(gap_skills),
                 SKILLS_GAP_TASK_THRESHOLD_PCT * 100,
                 [t.skill for t in gap_skills],
             )
+            try:
+                identifiers = create_gap_tasks(
+                    [(t.skill, t.pct_of_postings) for t in gap_skills]
+                )
+                logger.info("route_outputs: gap tasks upserted: %s", identifiers)
+            except Exception:
+                logger.exception("route_outputs: Linear gap-task creation failed")
         else:
             logger.info(
                 "No skills above gap threshold (%.0f%%)",
                 SKILLS_GAP_TASK_THRESHOLD_PCT * 100,
             )
-
-    # TODO (M4): outputs.linear.create_gap_tasks(gap_skills)
 
     return {}
 

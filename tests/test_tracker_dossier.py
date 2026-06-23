@@ -291,24 +291,29 @@ def test_score_trending_quiet_company_is_steady(monkeypatch):
 # write_dossier — Notion upsert + Linear top-mover flag
 # ---------------------------------------------------------------------------
 
-def test_write_dossier_upserts_and_flags_top_mover(monkeypatch, caplog):
+def test_write_dossier_upserts_and_flags_top_mover(monkeypatch):
     calls: list[tuple] = []
     monkeypatch.setattr(dossier, "upsert_company_dossier",
                         lambda md, name, **k: calls.append((md, name)) or "http://notion/d")
+    mover_calls: list[dict] = []
+    monkeypatch.setattr(dossier, "create_top_mover_task",
+                        lambda **kw: mover_calls.append(kw) or "JAR-9")
 
     score = TrendScore(composite=15.0, classification="accelerating",
                        rationale="hiring surge", is_top_mover=True)
-    import logging
-    with caplog.at_level(logging.INFO, logger="agents.tracker.dossier"):
-        out = write_dossier({
-            "dossier_markdown": "## Summary\nx",
-            "signals": _signals(),
-            "trend_score": score,
-        })
+    out = write_dossier({
+        "dossier_markdown": "## Summary\nx",
+        "signals": _signals(),
+        "trend_score": score,
+    })
 
     assert out == {"dossier_url": "http://notion/d"}
     assert calls == [("## Summary\nx", "Anthropic")]
-    assert "top mover" in caplog.text.lower()
+    # top mover → Linear task created with the score + the dossier URL
+    [kw] = mover_calls
+    assert kw["company_slug"] == "anthropic"
+    assert kw["classification"] == "accelerating"
+    assert kw["dossier_url"] == "http://notion/d"
 
 
 def test_write_dossier_noop_without_dossier(monkeypatch):

@@ -36,6 +36,7 @@ from config import (
     TRACKER_SCORE_CAPS,
     TRACKER_SCORE_WEIGHTS,
 )
+from outputs.linear import create_top_mover_task
 from outputs.notion import upsert_company_dossier
 from store.db import get_connection
 
@@ -413,10 +414,10 @@ def score_trending(state: TrackerState) -> dict:
 # ---------------------------------------------------------------------------
 
 def write_dossier(state: TrackerState) -> dict:
-    """Upsert the company's Notion dossier; flag top movers for a Linear task.
+    """Upsert the company's Notion dossier; open/refresh a Linear task for top movers.
 
-    Linear task creation is stubbed (logged) here, matching the skills agent's
-    route_outputs — the Linear writer lands in M4 (outputs.linear).
+    An outputs failure (Notion or Linear) must not abort the map over companies,
+    so each external write is guarded independently and degrades to a logged warning.
     """
     dossier = state.get("dossier_markdown")
     signals = state.get("signals")
@@ -426,14 +427,26 @@ def write_dossier(state: TrackerState) -> dict:
         logger.info("write_dossier: no dossier to write (synthesis skipped); nothing to do")
         return {}
 
-    url = upsert_company_dossier(dossier, signals.company_name)
-    logger.info("write_dossier: %s dossier written to Notion: %s", signals.company_slug, url)
+    url: str | None = None
+    try:
+        url = upsert_company_dossier(dossier, signals.company_name)
+        logger.info("write_dossier: %s dossier written to Notion: %s", signals.company_slug, url)
+    except Exception:
+        logger.exception("write_dossier: Notion upsert failed for %s", signals.company_slug)
 
     if score and score.is_top_mover:
-        # TODO (M4): outputs.linear.create_top_mover_task(signals, score)
-        logger.info(
-            "write_dossier: %s is a top mover (composite=%.2f, %s) — Linear task to create: %s",
-            signals.company_slug, score.composite, score.classification, score.rationale,
-        )
+        try:
+            identifier = create_top_mover_task(
+                company_name=signals.company_name,
+                company_slug=signals.company_slug,
+                composite=score.composite,
+                classification=score.classification,
+                rationale=score.rationale,
+                dossier_url=url,
+            )
+            logger.info("write_dossier: %s top-mover Linear task %s",
+                        signals.company_slug, identifier)
+        except Exception:
+            logger.exception("write_dossier: Linear task failed for %s", signals.company_slug)
 
     return {"dossier_url": url}
