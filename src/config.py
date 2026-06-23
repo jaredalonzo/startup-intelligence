@@ -1,17 +1,17 @@
 """Central configuration — model objects, thresholds, and tunables."""
-from langchain_anthropic import ChatAnthropic
-# To switch to Ollama: swap the two import lines and update the model strings below.
-# from langchain_ollama import ChatOllama
+# To switch to Anthropic: swap the two import lines and update the model strings below.
+# from langchain_anthropic import ChatAnthropic
+from langchain_ollama import ChatOllama
 
 # ---------------------------------------------------------------------------
 # LLM instances — import these in nodes, never instantiate a client there
 # ---------------------------------------------------------------------------
 
 # High-volume extraction node (runs once per posting — cost scales with volume)
-EXTRACTION_LLM = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=1024)  # type: ignore[call-arg]
+EXTRACTION_LLM = ChatOllama(model="qwen2.5:14b", temperature=0)
 
 # Synthesis nodes (once per run — quality matters more than cost)
-SYNTHESIS_LLM = ChatAnthropic(model="claude-sonnet-4-6", max_tokens=2048)  # type: ignore[call-arg]
+SYNTHESIS_LLM = ChatOllama(model="qwen2.5:14b", temperature=0)
 
 # Tracker board resolution (LLM + tool-use; one-time cost per new company) —
 # a once-per-company, quality-over-cost task, so it reuses the synthesis model.
