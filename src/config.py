@@ -13,6 +13,11 @@ EXTRACTION_LLM = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=102
 # Synthesis nodes (once per run — quality matters more than cost)
 SYNTHESIS_LLM = ChatAnthropic(model="claude-sonnet-4-6", max_tokens=2048)  # type: ignore[call-arg]
 
+# Tracker board resolution (LLM + tool-use; one-time cost per new company) —
+# a once-per-company, quality-over-cost task, so it reuses the synthesis model.
+# Whatever model SYNTHESIS_LLM points to must support tool calling.
+RESOLVE_LLM = SYNTHESIS_LLM
+
 # ---------------------------------------------------------------------------
 # Skills agent
 # ---------------------------------------------------------------------------
@@ -39,3 +44,11 @@ TARGET_ROLES = [
     "Customer Solutions Engineer (CSE)",
     "Implementation Engineer",
 ]
+
+# ---------------------------------------------------------------------------
+# Tracker agent
+# ---------------------------------------------------------------------------
+
+# Max ATS-slug probes the resolve_board tool-use loop may make per company
+# before giving up. Caps the cost of an unresolvable company.
+TRACKER_RESOLVE_MAX_PROBES = 6

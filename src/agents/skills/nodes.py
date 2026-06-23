@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
-from agents.state import SkillExtraction, SkillTrend, SkillsState, TrendReport
+from agents.skills.state import SkillExtraction, SkillTrend, SkillsState, TrendReport
 from config import (
     EXTRACTION_LLM,
     SKILLS_DEFAULT_WINDOW_DAYS,

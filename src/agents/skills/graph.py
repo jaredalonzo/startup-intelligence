@@ -24,7 +24,7 @@ from langgraph.types import Send
 from psycopg import Connection
 from psycopg.rows import dict_row
 
-from agents.state import SkillExtraction, SkillTrend, SkillsState, TrendReport
+from agents.skills.state import SkillExtraction, SkillTrend, SkillsState, TrendReport
 from agents.skills import nodes
 
 # ---------------------------------------------------------------------------

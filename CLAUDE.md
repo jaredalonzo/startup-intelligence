@@ -45,8 +45,10 @@ src/
     db.py
   agents/
     skills/         # LangGraph: load_deltas, extract_skills, normalize, aggregate, synthesize, route
+      state.py      # SkillsState + extraction/trend schemas
     tracker/        # LangGraph: resolve_board, fetch_signals, snapshot, diff, synthesize_dossier, score
-    state.py        # shared TypedDict state objects
+      state.py      # TrackerState + BoardResolution
+                    # state lives with each graph; the two agents share no state objects
   outputs/
     notion.py       # dossier + digest writers
     linear.py       # gap-task creator

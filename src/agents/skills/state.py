@@ -1,4 +1,4 @@
-"""Shared TypedDict state objects for both LangGraph agents."""
+"""State objects for the skills trend agent graph."""
 from __future__ import annotations
 
 import operator
