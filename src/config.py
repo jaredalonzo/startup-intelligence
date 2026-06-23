@@ -120,3 +120,11 @@ LINEAR_PROJECT_ID = os.getenv("LINEAR_PROJECT_ID", "a147d3f0-638d-4ba9-af05-dc15
 # run entrypoints via observability.init_tracing(), and only when
 # LANGSMITH_API_KEY is present in the environment.
 LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "startup-intelligence")
+
+# Per-run soft LLM budgets (observability.CostGuard). Crossing either logs a
+# one-time WARNING; the run still finishes (alerting, not blocking). Generous by
+# design — meant to catch runaway loops/fan-outs, not normal volume (a full
+# skills run is ~1 call per posting). Tokens matter most on the Anthropic path;
+# Ollama may not report them, so the call budget is the reliable rail.
+LLM_CALL_BUDGET_PER_RUN = int(os.getenv("LLM_CALL_BUDGET_PER_RUN", "5000"))
+LLM_TOKEN_BUDGET_PER_RUN = int(os.getenv("LLM_TOKEN_BUDGET_PER_RUN", "5000000"))

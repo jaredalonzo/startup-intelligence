@@ -52,8 +52,9 @@ from psycopg.rows import dict_row
 from agents.tracker import dossier as dossier_mod
 from agents.tracker.graph import compile_graph
 from agents.tracker.state import BoardResolution, DossierInputs, TrendScore
+from config import LLM_CALL_BUDGET_PER_RUN, LLM_TOKEN_BUDGET_PER_RUN
 from ingestion.watchlist import COMPANIES
-from observability import init_tracing
+from observability import CostGuard, init_tracing
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,13 +109,17 @@ def _install_dry_run() -> None:
     dossier_mod.upsert_company_dossier = _fake_upsert  # type: ignore[assignment]
 
 
-async def _run_company(graph, company: dict) -> dict:
-    """Invoke the per-company graph once; return a compact result row."""
+async def _run_company(graph, company: dict, guard: CostGuard) -> dict:
+    """Invoke the per-company graph once; return a compact result row.
+
+    The shared CostGuard accumulates across all companies so the budget is
+    per-run (whole watchlist), not per-company.
+    """
     slug = company["slug"]
     try:
         result = await graph.ainvoke(
             {"company": company},
-            config={"configurable": {"thread_id": f"tracker-{slug}"}},
+            config={"configurable": {"thread_id": f"tracker-{slug}"}, "callbacks": [guard]},
         )
     except Exception:
         log.exception("tracker: %s failed; continuing", slug)
@@ -183,6 +188,7 @@ async def main() -> None:
         return
     log.info("Starting tracker run over %d companies", len(companies))
 
+    guard = CostGuard(LLM_CALL_BUDGET_PER_RUN, LLM_TOKEN_BUDGET_PER_RUN)
     rows: list[dict] = []
     async with _async_checkpointer() as checkpointer:
         await checkpointer.setup()
@@ -190,8 +196,9 @@ async def main() -> None:
         # Sequential map: one async connection reused across invokes, in order.
         # Parallel mapping would need a connection per task — left for later.
         for company in companies:
-            rows.append(await _run_company(graph, company))
+            rows.append(await _run_company(graph, company, guard))
 
+    guard.log_summary()
     _print_summary(rows)
 
 

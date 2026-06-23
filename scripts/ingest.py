@@ -112,7 +112,14 @@ async def main() -> None:
 
     log.info("Starting ingestion run for %d companies", len(companies))
 
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    # Bounded timeout so one hung board can't stall the whole run, plus
+    # connection-level retries (httpx backs off between attempts) for transient
+    # network blips. Per-board try/except below still isolates any hard failure.
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=httpx.Timeout(15.0),
+        transport=httpx.AsyncHTTPTransport(retries=2),
+    ) as client:
         for row in companies:
             slug, ats, ats_slug, github_org, blog_rss_url = (
                 row["slug"], row["ats"], row["ats_slug"], row["github_org"], row["blog_rss_url"]

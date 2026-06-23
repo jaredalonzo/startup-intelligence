@@ -22,7 +22,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agents.skills.graph import compile_graph, make_checkpointer
-from observability import init_tracing
+from config import LLM_CALL_BUDGET_PER_RUN, LLM_TOKEN_BUDGET_PER_RUN
+from observability import CostGuard, init_tracing
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,13 +54,15 @@ def main() -> None:
         initial["watermark"] = watermark.isoformat()
         log.info("Watermark overridden: looking back %d days", args.window_days)
 
+    guard = CostGuard(LLM_CALL_BUDGET_PER_RUN, LLM_TOKEN_BUDGET_PER_RUN)
     with make_checkpointer() as checkpointer:
         checkpointer.setup()
         graph = compile_graph(checkpointer)
         result = graph.invoke(
             initial,
-            config={"configurable": {"thread_id": _THREAD_ID}},
+            config={"configurable": {"thread_id": _THREAD_ID}, "callbacks": [guard]},
         )
+    guard.log_summary()
 
     postings_count = len(result.get("new_postings") or [])
     extractions_count = len(result.get("extractions") or [])
