@@ -7,3 +7,6 @@ build/
 .env
 .env.*
 *.sqlite
+
+# Local-only docs/decision notes; not tracked
+docs/
