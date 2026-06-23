@@ -91,6 +91,19 @@ jobs:
                   (since,),
               ).fetchall()
 
+              blog_total = conn.execute(
+                  "SELECT COUNT(*) as n FROM blog_posts WHERE first_seen_at >= %s", (since,)
+              ).fetchone()["n"]
+
+              blog_by_company = conn.execute(
+                  """
+                  SELECT company_slug, COUNT(*) as posts
+                  FROM blog_posts WHERE first_seen_at >= %s
+                  GROUP BY company_slug ORDER BY posts DESC
+                  """,
+                  (since,),
+              ).fetchall()
+
           lines = [
               f"## Ingest Summary — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
               f"",
@@ -128,6 +141,17 @@ jobs:
               lines += ["| Company | New Releases |", "|---|---|"]
               for r in gh_by_company:
                   lines.append(f"| {r['company_slug']} | {r['releases']} |")
+              lines.append("")
+
+          lines += [
+              f"### Blog Posts",
+              f"**{blog_total} new posts ingested** (last 25 hours)",
+              f"",
+          ]
+          if blog_by_company:
+              lines += ["| Company | New Posts |", "|---|---|"]
+              for r in blog_by_company:
+                  lines.append(f"| {r['company_slug']} | {r['posts']} |")
               lines.append("")
 
           with open(summary_file, "w") as f:

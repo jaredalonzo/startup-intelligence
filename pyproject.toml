@@ -17,6 +17,7 @@ dependencies = [
     "langchain-anthropic>=0.3",
     "langchain-ollama>=0.3",
     "pyyaml>=6.0",
+    "feedparser>=6.0",
 ]
 
 [project.optional-dependencies]
