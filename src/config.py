@@ -52,3 +52,24 @@ TARGET_ROLES = [
 # Max ATS-slug probes the resolve_board tool-use loop may make per company
 # before giving up. Caps the cost of an unresolvable company.
 TRACKER_RESOLVE_MAX_PROBES = 6
+
+# ---------------------------------------------------------------------------
+# Tracker dossier (load_signals / synthesize_dossier / score_trending)
+# ---------------------------------------------------------------------------
+
+# How many snapshots back to load for the per-company time series. The two most
+# recent give the current-vs-previous deltas; the rest are trajectory context.
+TRACKER_DOSSIER_SNAPSHOT_LOOKBACK = 8
+
+# Weights for the deterministic composite momentum score (score_trending). Each
+# multiplies a per-run signal; star_growth is applied per 100 stars gained.
+TRACKER_SCORE_WEIGHTS = {
+    "eng_velocity": 1.0,      # net change in eng/product/data postings
+    "posting_growth": 0.5,    # net change in total live postings
+    "release_cadence": 2.0,   # new GitHub releases since last run
+    "blog_cadence": 1.5,      # new blog posts since last run
+    "star_growth": 1.0,       # GitHub star delta, per 100 stars
+}
+
+# Composite at/above which a company is a "top mover" worth a Linear task.
+TRACKER_TOP_MOVER_COMPOSITE = 5.0
