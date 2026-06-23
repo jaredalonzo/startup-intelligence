@@ -13,19 +13,19 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 
-import anthropic
 import yaml
+from langchain_core.messages import HumanMessage, SystemMessage
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
 from agents.state import SkillExtraction, SkillTrend, SkillsState, TrendReport
 from config import (
-    EXTRACTION_MODEL,
+    EXTRACTION_LLM,
     SKILLS_DEFAULT_WINDOW_DAYS,
     SKILLS_GAP_TASK_THRESHOLD_PCT,
     SKILLS_MIN_POSTING_COUNT,
     SKILLS_TOP_N,
-    SYNTHESIS_MODEL,
+    SYNTHESIS_LLM,
     TARGET_ROLES,
 )
 from store.db import get_connection
@@ -182,7 +182,7 @@ def _persist_extractions(extractions: list[SkillExtraction], conn) -> None:  # t
             {
                 "ats": ex.ats,
                 "posting_id": ex.posting_id,
-                "model": EXTRACTION_MODEL,
+                "model": EXTRACTION_LLM.model,
                 "skills": ex.skills,
                 "platforms": ex.platforms,
                 "seniority": ex.seniority,
@@ -355,11 +355,9 @@ def extract_one(state: dict) -> dict:
         context_parts.append(f"Team: {posting['team']}")
     context_parts.append(f"\n{text}")
 
-    client = anthropic.Anthropic()
-    response = client.messages.parse(
-        model=EXTRACTION_MODEL,
-        max_tokens=1024,
-        system=(
+    chain = EXTRACTION_LLM.with_structured_output(_PostingExtraction)
+    llm: _PostingExtraction = chain.invoke([  # type: ignore[assignment]
+        SystemMessage(content=(
             "Extract structured information from job postings. "
             "Use canonical names: 'Kubernetes' not 'k8s', 'PostgreSQL' not 'postgres', "
             "'TypeScript' not 'TS', 'JavaScript' not 'JS'. "
@@ -367,12 +365,9 @@ def extract_one(state: dict) -> dict:
             "or null if not determinable. "
             "For platforms, include cloud providers and infrastructure (AWS, GCP, Azure, Kubernetes, "
             "Terraform, etc.) — not general-purpose languages or frameworks."
-        ),
-        messages=[{"role": "user", "content": "\n".join(context_parts)}],
-        output_format=_PostingExtraction,
-    )
-
-    llm = response.parsed_output
+        )),
+        HumanMessage(content="\n".join(context_parts)),
+    ])
     extraction = SkillExtraction(
         posting_id=posting["id"],
         ats=posting["ats"],
@@ -457,26 +452,15 @@ for the target archetypes.
 
 Be specific and actionable. Name actual skills, not categories. Keep each section to 3–5 bullets."""
 
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=SYNTHESIS_MODEL,
-        max_tokens=2048,
-        system=(
+    response = SYNTHESIS_LLM.invoke([
+        SystemMessage(content=(
             "You are a technical skills analyst for AI/data/infra roles. "
             "Write concise, actionable radar digests. "
             "Use specific skill names, not vague categories. "
             "Be direct about what to prioritize and why."
-        ),
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    from anthropic.types import TextBlock
-    digest = next(b.text for b in response.content if isinstance(b, TextBlock))
-    logger.info(
-        "synthesize_radar: generated %d-char digest (model=%s, input_tokens=%d, output_tokens=%d)",
-        len(digest),
-        SYNTHESIS_MODEL,
-        response.usage.input_tokens,
-        response.usage.output_tokens,
-    )
+        )),
+        HumanMessage(content=prompt),
+    ])
+    digest: str = response.content  # type: ignore[assignment]
+    logger.info("synthesize_radar: generated %d-char digest", len(digest))
     return {"radar_digest": digest}

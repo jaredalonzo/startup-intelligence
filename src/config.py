@@ -1,18 +1,17 @@
-"""Central configuration — model strings, thresholds, and tunables.
-
-All LLM nodes pull model IDs from here. Change a model in one place,
-it applies everywhere.
-"""
+"""Central configuration — model objects, thresholds, and tunables."""
+from langchain_anthropic import ChatAnthropic
+# To switch to Ollama: swap the two import lines and update the model strings below.
+# from langchain_ollama import ChatOllama
 
 # ---------------------------------------------------------------------------
-# Model strings
+# LLM instances — import these in nodes, never instantiate a client there
 # ---------------------------------------------------------------------------
 
 # High-volume extraction node (runs once per posting — cost scales with volume)
-EXTRACTION_MODEL = "claude-haiku-4-5-20251001"
+EXTRACTION_LLM = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=1024)  # type: ignore[call-arg]
 
 # Synthesis nodes (once per run — quality matters more than cost)
-SYNTHESIS_MODEL = "claude-sonnet-4-6"
+SYNTHESIS_LLM = ChatAnthropic(model="claude-sonnet-4-6", max_tokens=2048)  # type: ignore[call-arg]
 
 # ---------------------------------------------------------------------------
 # Skills agent
