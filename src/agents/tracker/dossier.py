@@ -33,6 +33,7 @@ from config import (
     TRACKER_ACCEL_BAND,
     TRACKER_COOL_BAND,
     TRACKER_DOSSIER_SNAPSHOT_LOOKBACK,
+    TRACKER_GROWTH_REF,
     TRACKER_SCORE_CAPS,
     TRACKER_SCORE_WEIGHTS,
 )
@@ -326,27 +327,37 @@ def _growth(curr: int | None, window_delta: int | None) -> float:
     return window_delta / base if base > 0 else 0.0
 
 
-def _composite(s: DossierInputs) -> float:
-    """Bounded, hiring-led momentum index (~0-100). Each component is normalized
-    so no single signal can saturate the score; activity terms are capped.
+def _clamp(x: float) -> float:
+    """Clamp to [-1, 1] — the common scale every score component normalizes to."""
+    return max(-1.0, min(x, 1.0))
 
-    Hiring carries the most weight by design (it's the core growth proxy) and
-    will dominate once snapshot history is deep; the GitHub/blog activity terms
-    corroborate it. See TRACKER_SCORE_WEIGHTS / _CAPS for the calibration.
+
+def _composite(s: DossierInputs) -> float:
+    """Bounded, hiring-led momentum index (~[-100, 100]).
+
+    Every component is normalized to [-1, 1] so the weights (which sum to 1)
+    govern the blend rather than each signal's raw magnitude. The hiring terms —
+    window growth rates — are normalized against TRACKER_GROWTH_REF so a genuinely
+    fast-hiring company saturates them; without this they enter as tiny fractions
+    that the (already-normalized) activity terms drown out, which is what made the
+    first cut release-dominated. Activity terms are capped and weigh only 0.35
+    total, below ACCEL_BAND, so they corroborate hiring but can't trigger a top
+    mover on their own. See TRACKER_SCORE_WEIGHTS / _CAPS / _GROWTH_REF / bands.
     """
     w = TRACKER_SCORE_WEIGHTS
     caps = TRACKER_SCORE_CAPS
+    ref = TRACKER_GROWTH_REF
     star_growth = sum(d for _, d in s.star_delta_by_repo)
 
-    eng_growth = _growth(s.eng_count, s.eng_count_window_delta)
-    post_growth = _growth(s.posting_count, s.posting_count_window_delta)
+    eng_norm = _clamp(_growth(s.eng_count, s.eng_count_window_delta) / ref)
+    post_norm = _clamp(_growth(s.posting_count, s.posting_count_window_delta) / ref)
     release_act = min(s.new_release_count, caps["release_cadence"]) / caps["release_cadence"]
     blog_act = min(s.new_blog_count, caps["blog_cadence"]) / caps["blog_cadence"]
-    star_act = max(-1.0, min(star_growth / caps["star_growth"], 1.0))
+    star_act = _clamp(star_growth / caps["star_growth"])
 
     raw = (
-        w["eng_velocity"] * eng_growth
-        + w["posting_growth"] * post_growth
+        w["eng_velocity"] * eng_norm
+        + w["posting_growth"] * post_norm
         + w["release_cadence"] * release_act
         + w["blog_cadence"] * blog_act
         + w["star_growth"] * star_act

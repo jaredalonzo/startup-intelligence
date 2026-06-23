@@ -65,19 +65,26 @@ TRACKER_RESOLVE_MAX_PROBES = 6
 # deltas between adjacent snapshots are too noisy to score on.
 TRACKER_DOSSIER_SNAPSHOT_LOOKBACK = 8
 
-# Composite momentum score (score_trending). Each component is normalized to a
-# bounded range, weighted (weights sum to 1), and scaled to ~0-100. Hiring
-# velocity leads by design — it is the project's core growth proxy — so it
-# dominates once snapshot history is deep enough for the trend to be meaningful;
-# the GitHub/blog activity terms corroborate and are capped (below) so they
-# cannot saturate the score on their own. (See the live-run calibration note.)
+# Composite momentum score (score_trending). Every component is normalized to a
+# common [-1, 1] scale (activity terms [0, 1]), weighted (weights sum to 1), and
+# scaled to a ~[-100, 100] index. Hiring leads by design — it is the project's
+# core growth proxy. The hiring weights sum to 0.65 and the activity weights to
+# 0.35, so the activity-only ceiling is 35; ACCEL_BAND sits *above* that (below),
+# which means activity alone can never make a company a top mover — it can only
+# corroborate real hiring momentum. (Fixes the release-dominated live-run bug.)
 TRACKER_SCORE_WEIGHTS = {
-    "eng_velocity": 0.45,     # window growth rate of eng/product/data postings
-    "posting_growth": 0.20,   # window growth rate of total live postings
+    "eng_velocity": 0.45,     # eng/product/data hiring growth (normalized, leads)
+    "posting_growth": 0.20,   # total live-posting growth (normalized)
     "release_cadence": 0.15,  # new GitHub releases since last run (capped)
     "blog_cadence": 0.10,     # new blog posts since last run (capped)
     "star_growth": 0.10,      # GitHub star delta (capped)
 }
+
+# Reference window growth rate that earns a hiring term full credit (maps to 1.0).
+# Growing eng/total postings this fast over the tracked window saturates the
+# hiring term; this puts hiring on the same 0-1 scale as the activity terms,
+# instead of entering as a tiny raw fraction that the activity terms drown out.
+TRACKER_GROWTH_REF = 0.25
 
 # Caps that bound each activity component before weighting (prevent saturation).
 TRACKER_SCORE_CAPS = {
@@ -86,11 +93,13 @@ TRACKER_SCORE_CAPS = {
     "star_growth": 1000,
 }
 
-# Composite bands (on the ~0-100 scale) → classification. A company is a
-# "top mover" iff it lands in the accelerating band, so the deterministic flag
-# can never contradict the label. Calibrated against the live distribution.
-TRACKER_ACCEL_BAND = 12.0
-TRACKER_COOL_BAND = -3.0
+# Composite bands → classification. A company is a "top mover" iff it lands in the
+# accelerating band, so the deterministic flag can never contradict the label.
+# ACCEL_BAND (40) is deliberately > the activity-only ceiling (35): a top mover
+# must have genuine hiring momentum, not just an active GitHub/blog. Recalibrate
+# against the live distribution as snapshot history deepens.
+TRACKER_ACCEL_BAND = 40.0
+TRACKER_COOL_BAND = -5.0
 
 # ---------------------------------------------------------------------------
 # Outputs — Linear (outputs/linear.py)

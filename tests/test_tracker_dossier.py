@@ -233,16 +233,18 @@ def test_growth_rate_and_edges():
 
 
 def test_composite_is_bounded_hiring_led_sum():
-    # eng 0.45*(30/100)=0.135; post 0.20*(20/180)=0.022222; release 0.15*(4/8)=0.075;
-    # blog 0.10*(3/6)=0.05; star 0.10*(500/1000)=0.05 → 0.332222 *100 = 33.22
-    assert _composite(_signals()) == 33.22
+    # Hiring terms are normalized against GROWTH_REF (0.25): eng growth 30/100=0.30
+    # saturates to 1.0 → 0.45*1.0=0.45; post (20/180)=0.1111 /0.25=0.4444 → 0.20*0.4444
+    # =0.088889; release 0.15*(4/8)=0.075; blog 0.10*(3/6)=0.05; star 0.10*(500/1000)
+    # =0.05 → 0.713889 *100 = 71.39
+    assert _composite(_signals()) == 71.39
 
 
 def test_classify_bands():
-    assert _classify(25.0) == ("accelerating", True)
-    assert _classify(12.0) == ("accelerating", True)    # boundary is inclusive
-    assert _classify(5.0) == ("steady", False)
-    assert _classify(-3.0) == ("cooling", False)        # boundary is inclusive
+    assert _classify(55.0) == ("accelerating", True)
+    assert _classify(40.0) == ("accelerating", True)    # boundary is inclusive
+    assert _classify(20.0) == ("steady", False)         # strong activity, weak hiring
+    assert _classify(-5.0) == ("cooling", False)        # boundary is inclusive
     assert _classify(-10.0) == ("cooling", False)
 
 
@@ -271,8 +273,8 @@ def test_score_trending_classifies_deterministically_with_llm_rationale(monkeypa
 
     score: TrendScore = score_trending({"signals": _signals()})["trend_score"]
 
-    assert score.composite == 33.22
-    assert score.classification == "accelerating"        # 33.22 >= ACCEL band (12.0)
+    assert score.composite == 71.39
+    assert score.classification == "accelerating"        # 71.39 >= ACCEL band (40.0)
     assert score.is_top_mover is True
     assert score.rationale == "hiring + release surge"
 
