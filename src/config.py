@@ -59,6 +59,13 @@ RESOLVE_LLM = SYNTHESIS_LLM
 # Number of days to look back when no watermark exists (first run)
 SKILLS_DEFAULT_WINDOW_DAYS = 30
 
+# agent_watermarks key for the skills agent's incremental-read watermark. This is
+# the agent's own "last processed" mark — distinct from the per-board ingestion
+# watermarks table. Persisted in the store (not the LangGraph checkpointer) so the
+# graph can run under a fresh thread_id per run without losing it; see
+# load_deltas / aggregate_trends.
+SKILLS_WATERMARK_KEY = "skills-agent"
+
 # Minimum number of postings a skill must appear in to be included in the radar
 SKILLS_MIN_POSTING_COUNT = 3
 

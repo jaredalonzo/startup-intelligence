@@ -178,6 +178,46 @@ def test_aggregate_trends_counts_thresholds_and_co_occurrence(monkeypatch):
     assert conn.commits == 1     # extractions were persisted before diffing
 
 
+def test_aggregate_trends_advances_watermark_in_same_txn(monkeypatch):
+    # The candidate watermark from load_deltas must be committed together with the
+    # extractions it covers, on the run's connection.
+    conn = _FakeConn(rows=[])
+    _patch_conn(monkeypatch, conn)
+    calls: list = []
+    monkeypatch.setattr(
+        nodes, "set_agent_watermark",
+        lambda key, ts, conn=None: calls.append((key, ts, conn)),
+    )
+    candidate = "2026-06-20T00:00:00+00:00"
+
+    aggregate_trends({
+        "normalized_extractions": [_ex(["Kubernetes"], ["AWS"])],
+        "watermark": candidate,
+    })
+
+    assert len(calls) == 1
+    key, ts, used_conn = calls[0]
+    assert key == nodes.SKILLS_WATERMARK_KEY
+    assert ts == datetime.fromisoformat(candidate)
+    assert used_conn is conn          # advanced on the run's connection
+    assert conn.commits == 1          # extractions + watermark committed together
+
+
+def test_aggregate_trends_skips_watermark_without_candidate(monkeypatch):
+    conn = _FakeConn(rows=[])
+    _patch_conn(monkeypatch, conn)
+    calls: list = []
+    monkeypatch.setattr(
+        nodes, "set_agent_watermark",
+        lambda *a, **k: calls.append((a, k)),
+    )
+
+    aggregate_trends({"normalized_extractions": [_ex(["Kubernetes"], ["AWS"])]})
+
+    assert calls == []                # no watermark in state ⇒ no advance
+    assert conn.commits == 1
+
+
 def test_aggregate_trends_empty_window(monkeypatch):
     conn = _FakeConn(rows=[])
     _patch_conn(monkeypatch, conn)
@@ -370,10 +410,16 @@ def test_synthesize_radar_passes_through_model_content(monkeypatch):
 # load_deltas (DB node) — watermark handling
 # ---------------------------------------------------------------------------
 
+def _patch_stored_watermark(monkeypatch, value) -> None:
+    """Stub the store-backed agent watermark read used by load_deltas."""
+    monkeypatch.setattr(nodes, "get_agent_watermark", lambda _key: value)
+
+
 def test_load_deltas_defaults_watermark_and_returns_rows(monkeypatch):
     row = {"id": "x", "title": "Software Engineer", "department": "Engineering"}
     conn = _FakeConn(rows=[row])
     _patch_conn(monkeypatch, conn)
+    _patch_stored_watermark(monkeypatch, None)   # never run before
 
     out = load_deltas({})
 
@@ -386,6 +432,7 @@ def test_load_deltas_filters_non_technical_by_default(monkeypatch):
     eng = {"id": "e", "title": "Forward Deployed Engineer", "department": "Eng"}
     sales = {"id": "s", "title": "Account Executive", "department": "Sales"}
     _patch_conn(monkeypatch, _FakeConn(rows=[eng, sales]))
+    _patch_stored_watermark(monkeypatch, None)
 
     out = load_deltas({})
 
@@ -396,15 +443,30 @@ def test_load_deltas_all_roles_keeps_everything(monkeypatch):
     eng = {"id": "e", "title": "ML Engineer", "department": "Eng"}
     sales = {"id": "s", "title": "Account Executive", "department": "Sales"}
     _patch_conn(monkeypatch, _FakeConn(rows=[eng, sales]))
+    _patch_stored_watermark(monkeypatch, None)
 
     out = load_deltas({}, {"configurable": {"all_roles": True}})
 
     assert out["new_postings"] == [eng, sales]
 
 
+def test_load_deltas_uses_stored_watermark_when_present(monkeypatch):
+    conn = _FakeConn(rows=[])
+    _patch_conn(monkeypatch, conn)
+    stored = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    _patch_stored_watermark(monkeypatch, stored)
+
+    load_deltas({})   # no override → falls back to the stored agent watermark
+
+    _, params = conn.calls[0]
+    assert params["watermark"] == stored
+
+
 def test_load_deltas_uses_provided_watermark_in_query(monkeypatch):
     conn = _FakeConn(rows=[])
     _patch_conn(monkeypatch, conn)
+    # An explicit override (--window-days) must win over the stored watermark.
+    _patch_stored_watermark(monkeypatch, datetime(2026, 1, 1, tzinfo=timezone.utc))
     provided = "2026-06-01T00:00:00+00:00"
 
     load_deltas({"watermark": provided})

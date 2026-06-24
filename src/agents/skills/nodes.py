@@ -28,6 +28,7 @@ from config import (
     SKILLS_GAP_TASK_THRESHOLD_PCT,
     SKILLS_MIN_POSTING_COUNT,
     SKILLS_TOP_N,
+    SKILLS_WATERMARK_KEY,
     SYNTHESIS_LLM,
     TARGET_ROLES,
 )
@@ -35,7 +36,7 @@ from llm_structured import structured
 from outputs.linear import create_gap_tasks
 from outputs.notion import write_skills_digest
 from roles import is_technical
-from store.db import get_connection
+from store.db import get_agent_watermark, get_connection, set_agent_watermark
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,14 @@ def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dic
     for Ashby and Workable boards that do not expose a true updatedAt field), then
     keeps only technical roles — the skills radar targets FDE/TAM/CSE/eng, and the
     corpus is ~half GTM/ops/recruiting noise. Pass configurable ``all_roles=True``
-    to skip the filter (a deliberate broad analysis). Advances the watermark to NOW().
+    to skip the filter (a deliberate broad analysis).
+
+    Watermark source, in priority order: an explicit ``state['watermark']``
+    (set by ``--window-days`` to force a lookback), else the stored agent
+    watermark from a previous run, else a default first-run window. The candidate
+    new watermark (NOW()) is returned in state but only *committed* to the store in
+    aggregate_trends, alongside the extractions it covers — so a crash before then
+    re-processes the same postings next run rather than silently skipping them.
     """
     now = datetime.now(timezone.utc)
     all_roles = bool((config or {}).get("configurable", {}).get("all_roles", False))
@@ -70,7 +78,8 @@ def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dic
     if watermark_str:
         watermark = datetime.fromisoformat(watermark_str)
     else:
-        watermark = now - timedelta(days=SKILLS_DEFAULT_WINDOW_DAYS)
+        stored = get_agent_watermark(SKILLS_WATERMARK_KEY)
+        watermark = stored or (now - timedelta(days=SKILLS_DEFAULT_WINDOW_DAYS))
 
     with get_connection() as conn:
         rows = conn.execute(
@@ -197,8 +206,10 @@ def normalize_taxonomy(state: SkillsState) -> dict:
 def _persist_extractions(extractions: list[SkillExtraction], conn) -> None:  # type: ignore[type-arg]
     """Insert normalized extractions into the DB. Append-only by design.
 
-    Duplicate rows on graph retry are safe — downstream reads use
-    extracted_at DESC per posting to get the most recent extraction.
+    Does not commit — the caller (aggregate_trends) commits the inserts and the
+    watermark advance together so they can't desync. Duplicate rows on graph
+    retry are otherwise safe: downstream reads use extracted_at DESC per posting
+    to get the most recent extraction.
     """
     for ex in extractions:
         conn.execute(
@@ -224,7 +235,6 @@ def _persist_extractions(extractions: list[SkillExtraction], conn) -> None:  # t
                 "raw": Jsonb(ex.model_dump()),
             },
         )
-    conn.commit()
 
 
 def _query_prev_counts(conn, window_days: int) -> tuple[Counter[str], Counter[str]]:  # type: ignore[type-arg]
@@ -261,15 +271,23 @@ def aggregate_trends(state: SkillsState) -> dict:
     """Compute frequency deltas, new skills, and co-occurrence from normalized extractions.
 
     Persists the current extractions to the DB first (so future runs have a
-    previous window to diff against), then queries the previous equal-duration
-    window to compute count_previous for each skill/platform. No LLM.
+    previous window to diff against) and advances the agent watermark in the same
+    transaction — committing them together means a later failure can't leave the
+    watermark ahead of the extractions it covers. Then queries the previous
+    equal-duration window to compute count_previous for each skill/platform. No LLM.
     """
     extractions = _as_extractions(state.get("normalized_extractions") or [])
     total = len(extractions)
     window_days = SKILLS_DEFAULT_WINDOW_DAYS
+    candidate_watermark = state.get("watermark")
 
     with get_connection() as conn:
         _persist_extractions(extractions, conn)
+        if candidate_watermark:
+            set_agent_watermark(
+                SKILLS_WATERMARK_KEY, datetime.fromisoformat(candidate_watermark), conn=conn
+            )
+        conn.commit()
         prev_skills, prev_platforms = _query_prev_counts(conn, window_days)
 
     # Count skill and platform frequencies in the current window

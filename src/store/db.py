@@ -7,6 +7,7 @@ LangGraph nodes can each use the appropriate interface.
 
 import os
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Iterator
 
 import psycopg
@@ -49,3 +50,47 @@ async def make_async_pool(min_size: int = 1, max_size: int = 5) -> AsyncConnecti
                                open=False)
     await pool.open()
     return pool
+
+
+# ---------------------------------------------------------------------------
+# Agent watermarks (incremental-read marks, kept out of the LangGraph checkpointer)
+# ---------------------------------------------------------------------------
+
+def get_agent_watermark(agent: str) -> datetime | None:
+    """Return the agent's last-run watermark, or None if it has never run.
+
+    The skills/tracker graphs run under a fresh checkpointer thread_id per run
+    (so accumulating channels don't carry across runs), so their incremental-read
+    watermark must live here in the store instead of in checkpointed state.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT last_run_at FROM agent_watermarks WHERE agent = %s",
+            (agent,),
+        ).fetchone()
+    return row["last_run_at"] if row else None
+
+
+def set_agent_watermark(
+    agent: str,
+    ts: datetime,
+    conn: psycopg.Connection | None = None,  # type: ignore[type-arg]
+) -> None:
+    """Upsert the agent's last-run watermark.
+
+    Pass an existing ``conn`` to advance the watermark in the same transaction
+    that persists the run's output, so a later step failing can't desync them
+    (the caller owns the commit). With no ``conn``, opens its own and commits.
+    """
+    sql = """
+        INSERT INTO agent_watermarks (agent, last_run_at, updated_at)
+        VALUES (%s, %s, NOW())
+        ON CONFLICT (agent) DO UPDATE
+            SET last_run_at = EXCLUDED.last_run_at, updated_at = NOW()
+    """
+    if conn is not None:
+        conn.execute(sql, (agent, ts))
+        return
+    with get_connection() as own:
+        own.execute(sql, (agent, ts))
+        own.commit()

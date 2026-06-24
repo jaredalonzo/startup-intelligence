@@ -13,6 +13,7 @@ import argparse
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,7 +35,18 @@ log = logging.getLogger(__name__)
 
 init_tracing()
 
-_THREAD_ID = "skills-agent"
+
+def _new_thread_id() -> str:
+    """A unique checkpointer thread per run.
+
+    The skills graph accumulates the ``extractions`` channel via operator.add. A
+    fixed thread_id made the Postgres checkpointer reload the prior run's channel
+    and add the new run's extractions on top — inflating the current window and
+    re-persisting stale rows. A fresh thread per run isolates each run's channels;
+    incremental reads now hang off the stored agent watermark, not checkpointed
+    state. Intra-run resumability (re-invoking the same thread_id) is unaffected.
+    """
+    return f"skills-agent-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
 
 
 def _write_step_summary(result: dict) -> None:
@@ -114,7 +126,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    log.info("Starting skills agent run (thread=%s)", _THREAD_ID)
+    thread_id = _new_thread_id()
+    log.info("Starting skills agent run (thread=%s)", thread_id)
 
     initial: dict = {}  # type: ignore[type-arg]
     if args.window_days:
@@ -133,7 +146,7 @@ def main() -> None:
             # would be rejected (429). The tracker is already a sequential map, so
             # only the skills agent's fan-out needs this guard.
             config={
-                "configurable": {"thread_id": _THREAD_ID, "all_roles": args.all_roles},
+                "configurable": {"thread_id": thread_id, "all_roles": args.all_roles},
                 "callbacks": [guard],
                 "max_concurrency": 1,
             },

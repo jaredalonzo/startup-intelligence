@@ -112,6 +112,21 @@ CREATE TABLE IF NOT EXISTS watermarks (
 );
 
 -- ---------------------------------------------------------------------------
+-- agent_watermarks
+-- One row per agent (e.g. 'skills-agent'). The agent's own incremental-read
+-- watermark: it processes postings WHERE first_seen_at > last_run_at. Kept here
+-- (the store) rather than in the LangGraph checkpointer so each run can use a
+-- fresh thread_id — the checkpointer's accumulating channels (operator.add on
+-- extractions) must not carry across runs. Distinct from the per-board
+-- ingestion `watermarks` table above.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_watermarks (
+    agent           TEXT        PRIMARY KEY,           -- e.g. 'skills-agent'
+    last_run_at     TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ---------------------------------------------------------------------------
 -- Supplementary signal metadata on companies (M3b)
 -- Added after initial schema; safe to re-run (IF NOT EXISTS / DO NOTHING).
 -- ---------------------------------------------------------------------------
