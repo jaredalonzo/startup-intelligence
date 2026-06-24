@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -42,6 +41,7 @@ from agents.skills.nodes import extract_posting_fields
 from config import EVAL_JUDGE_MODEL
 from eval.extraction_quality import make_offline_evaluator
 from eval.llm import build_llm
+from roles import is_technical
 from store.db import get_connection
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -69,44 +69,6 @@ _MIN_DESC_CHARS = 300
 # All deterministic — dataset construction stays out of the LLM (repo principle).
 # ---------------------------------------------------------------------------
 
-# Title/department signals that a posting is an engineering or technical-field role.
-_TECH_INCLUDE = re.compile(
-    r"\b(engineer|engineering|developer|forward[\s-]?deployed|solutions?\s+architect|"
-    r"solutions?\s+engineer|implementation|technical\s+(account|deployment|solutions)|"
-    r"platform|infrastructure|data\s+(scientist|engineer)|machine\s+learning|\bml\b|"
-    r"\bai\b|security|devops|\bsre\b|reliability|architect|deploy(ment)?|"
-    r"research\s+(engineer|scientist|intern))\b",
-    re.IGNORECASE,
-)
-# Non-technical signals — checked first, so "Developer Marketing" / "Technical
-# Program Manager" are rejected even though they trip the include pass.
-_NONTECH_EXCLUDE = re.compile(
-    r"\b(sales|marketing|market\b|finance|financial|legal|counsel|recruit|recruiting|"
-    r"people\b|talent|account\s+executive|\bsdr\b|\bbdr\b|communications|social\s+media|"
-    r"events?\s+manager|field\s+marketer|deal\s+strategy|storytelling|"
-    r"program\s+manager|product\s+manager|strategist)\b",
-    re.IGNORECASE,
-)
-
-
-# Placeholder "postings" whose title is a notice, not a role (e.g. an ATS that left
-# a "We have moved our Careers Page to <url>" stub with only company boilerplate as
-# the body). These slip the length guard but have no real JD to extract from.
-_STUB_TITLE = re.compile(r"we have moved|careers?\s+page|https?://|board\s+has\s+moved",
-                         re.IGNORECASE)
-
-
-def _is_technical(title: str | None, department: str | None) -> bool:
-    """Deterministic gate: keep eng + technical-field roles, drop GTM/ops/HR/stubs."""
-    title = title or ""
-    if _STUB_TITLE.search(title):
-        return False
-    text = f"{title} {department or ''}"
-    if _NONTECH_EXCLUDE.search(text):
-        return False
-    return bool(_TECH_INCLUDE.search(text))
-
-
 def _select_postings(rows: list[Any], sample: int) -> list[Any]:
     """Filter to technical roles, dedup reposts, then round-robin across companies.
 
@@ -116,7 +78,7 @@ def _select_postings(rows: list[Any], sample: int) -> list[Any]:
     seen: set[tuple[str, str]] = set()
     by_company: dict[str, list[Any]] = defaultdict(list)
     for r in rows:
-        if not _is_technical(r["title"], r["department"]):
+        if not is_technical(r["title"], r["department"]):
             continue
         key = (r["company_slug"], (r["title"] or "").strip().lower())
         if key in seen:
