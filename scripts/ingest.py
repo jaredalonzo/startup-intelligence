@@ -28,6 +28,7 @@ from ingestion.ats.models import ATSSource, Posting
 from ingestion.diff import compute_diff
 from ingestion.signals.blog_rss import fetch_blog_posts, write_blog_posts
 from ingestion.signals.github_org import fetch_github_signals, write_github_signals
+from ingestion.signals.package_downloads import fetch_package_downloads, write_package_downloads
 from ingestion.snapshot import update_watermark, upsert_postings, write_snapshot
 from store.db import get_connection
 
@@ -48,6 +49,7 @@ async def ingest_company(
     ats_slug: str,
     github_org: str | None,
     blog_rss_url: str | None,
+    packages: list[tuple[str, str]],
     client: httpx.AsyncClient,
 ) -> dict[str, object]:
     """Fetch, diff, persist one company. Returns a summary dict."""
@@ -56,7 +58,8 @@ async def ingest_company(
     if not postings:
         log.warning("%s (%s:%s) returned 0 postings — skipping snapshot", slug, ats, ats_slug)
         return {"slug": slug, "ats": ats, "total": 0, "new": 0, "removed": 0,
-                "snapshot_id": None, "gh_releases": 0, "gh_repos": 0, "blog_posts": 0}
+                "snapshot_id": None, "gh_releases": 0, "gh_repos": 0, "blog_posts": 0,
+                "package_downloads": 0}
     if ats_slug != slug:
         postings = [p.model_copy(update={"company_slug": slug}) for p in postings]
     current_ids = {p.id for p in postings}
@@ -91,6 +94,17 @@ async def ingest_company(
         except Exception:
             log.exception("%s: Blog RSS fetch failed — skipping", slug)
 
+    # Package downloads (npm/PyPI — independent)
+    package_rows = 0
+    if packages:
+        try:
+            downloads = await fetch_package_downloads(slug, packages, client)
+            with get_connection() as conn:
+                package_rows = write_package_downloads(downloads, conn)
+                conn.commit()
+        except Exception:
+            log.exception("%s: Package download fetch failed — skipping", slug)
+
     return {
         "slug": slug,
         "ats": ats,
@@ -101,13 +115,15 @@ async def ingest_company(
         "gh_releases": gh_releases,
         "gh_repos": gh_repos,
         "blog_posts": blog_posts_new,
+        "package_downloads": package_rows,
     }
 
 
 async def main() -> None:
     with get_connection() as conn:
         companies = conn.execute(
-            "SELECT slug, ats, ats_slug, github_org, blog_rss_url FROM companies ORDER BY slug"
+            "SELECT slug, ats, ats_slug, github_org, blog_rss_url, packages "
+            "FROM companies ORDER BY slug"
         ).fetchall()
 
     log.info("Starting ingestion run for %d companies", len(companies))
@@ -124,14 +140,19 @@ async def main() -> None:
             slug, ats, ats_slug, github_org, blog_rss_url = (
                 row["slug"], row["ats"], row["ats_slug"], row["github_org"], row["blog_rss_url"]
             )
+            # packages is a JSONB array of {"registry", "package"} objects.
+            packages = [(p["registry"], p["package"]) for p in (row["packages"] or [])]
             try:
-                result = await ingest_company(slug, ats, ats_slug, github_org, blog_rss_url, client)
+                result = await ingest_company(
+                    slug, ats, ats_slug, github_org, blog_rss_url, packages, client
+                )
                 log.info(
                     "%s (%s:%s)  total=%d  new=%d  removed=%d  snapshot=%s  "
-                    "gh_releases=%d  gh_repos=%d  blog_posts=%d",
+                    "gh_releases=%d  gh_repos=%d  blog_posts=%d  pkg_downloads=%d",
                     result["slug"], result["ats"], ats_slug,
                     result["total"], result["new"], result["removed"], result["snapshot_id"],
                     result["gh_releases"], result["gh_repos"], result["blog_posts"],
+                    result["package_downloads"],
                 )
             except Exception:
                 log.exception("Failed to ingest %s (%s:%s) — skipping", slug, ats, ats_slug)

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import httpx
 import psycopg
+from psycopg.types.json import Jsonb
 
 from ingestion.ats.models import ATSSource
 
@@ -34,6 +35,9 @@ class WatchlistEntry:
     github_org: str | None = None      # GitHub org slug, e.g. 'anthropics'
     blog_url: str | None = None        # blog/news page URL
     blog_rss_url: str | None = None    # RSS feed URL, null if not available
+    # Published packages whose download trends proxy adoption.
+    # (registry, package) pairs; registry is 'pypi' or 'npm'.
+    packages: tuple[tuple[str, str], ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -44,17 +48,21 @@ COMPANIES: list[WatchlistEntry] = [
     # Foundation models
     WatchlistEntry("Anthropic",  "anthropic",   "greenhouse", "anthropic",
                    github_org="anthropics",
-                   blog_url="https://www.anthropic.com/blog"),
+                   blog_url="https://www.anthropic.com/blog",
+                   packages=(("pypi", "anthropic"), ("npm", "@anthropic-ai/sdk"))),
     WatchlistEntry("OpenAI",     "openai",       "ashby",      "openai",
                    github_org="openai",
-                   blog_rss_url="https://openai.com/blog/rss.xml"),
+                   blog_rss_url="https://openai.com/blog/rss.xml",
+                   packages=(("pypi", "openai"), ("npm", "openai"))),
     WatchlistEntry("Cohere",     "cohere",       "ashby",      "cohere",
                    github_org="cohere-ai",
-                   blog_url="https://cohere.com/blog"),
+                   blog_url="https://cohere.com/blog",
+                   packages=(("pypi", "cohere"), ("npm", "cohere-ai"))),
     WatchlistEntry("Mistral AI", "mistral",      "lever",      "mistral",
                    github_org="mistralai",
                    blog_url="https://mistral.ai/news",
-                   blog_rss_url="https://mistral.ai/rss.xml"),
+                   blog_rss_url="https://mistral.ai/rss.xml",
+                   packages=(("pypi", "mistralai"), ("npm", "@mistralai/mistralai"))),
     # AI applications
     WatchlistEntry("Perplexity AI", "perplexityai", "ashby",  "perplexity",
                    github_org="perplexity-ai"),
@@ -74,19 +82,24 @@ COMPANIES: list[WatchlistEntry] = [
     # Data / infra
     WatchlistEntry("Scale AI",        "scaleai",    "greenhouse", "scaleai",
                    github_org="scaleapi",
-                   blog_url="https://scale.com/blog"),
+                   blog_url="https://scale.com/blog",
+                   packages=(("pypi", "scaleapi"),)),
     WatchlistEntry("Hugging Face",    "huggingface", "workable", "huggingface",
                    github_org="huggingface",
                    blog_url="https://huggingface.co/blog",
-                   blog_rss_url="https://huggingface.co/blog/feed.xml"),
+                   blog_rss_url="https://huggingface.co/blog/feed.xml",
+                   packages=(("pypi", "transformers"), ("pypi", "huggingface-hub"),
+                             ("pypi", "datasets"), ("npm", "@huggingface/inference"))),
     WatchlistEntry("Anyscale",        "anyscale",   "lever",      "anyscale",
                    github_org="ray-project",
                    blog_url="https://www.anyscale.com/blog",
-                   blog_rss_url="https://www.anyscale.com/rss.xml"),
+                   blog_rss_url="https://www.anyscale.com/rss.xml",
+                   packages=(("pypi", "ray"),)),
     WatchlistEntry("Modal",           "modal-labs", "ashby",      "modal",
                    github_org="modal-labs",
                    blog_url="https://modal.com/blog",
-                   blog_rss_url="https://modal.com/blog/atom.xml"),
+                   blog_rss_url="https://modal.com/blog/atom.xml",
+                   packages=(("pypi", "modal"),)),
     WatchlistEntry("Runway",          "runway",     "ashby",      "runway",
                    github_org="runwayml",
                    blog_url="https://runwayml.com/blog"),
@@ -94,28 +107,36 @@ COMPANIES: list[WatchlistEntry] = [
     WatchlistEntry("Pinecone",  "pinecone", "ashby", "pinecone",
                    github_org="pinecone-io",
                    blog_url="https://www.pinecone.io/blog",
-                   blog_rss_url="https://www.pinecone.io/rss"),
+                   blog_rss_url="https://www.pinecone.io/rss",
+                   packages=(("pypi", "pinecone-client"),
+                             ("npm", "@pinecone-database/pinecone"))),
     WatchlistEntry("Weaviate",  "weaviate", "ashby", "weaviate",
                    github_org="weaviate",
                    blog_url="https://weaviate.io/blog",
-                   blog_rss_url="https://weaviate.io/blog/rss.xml"),
+                   blog_rss_url="https://weaviate.io/blog/rss.xml",
+                   packages=(("pypi", "weaviate-client"), ("npm", "weaviate-ts-client"))),
     # Tooling / platforms
     WatchlistEntry("LangChain",   "langchain",  "ashby",      "langchain",
                    github_org="langchain-ai",
                    blog_url="https://www.langchain.com/blog",
-                   blog_rss_url="https://www.langchain.com/blog/rss.xml"),
+                   blog_rss_url="https://www.langchain.com/blog/rss.xml",
+                   packages=(("pypi", "langchain"), ("pypi", "langchain-core"),
+                             ("npm", "langchain"))),
     WatchlistEntry("Together AI", "togetherai", "greenhouse", "togetherai",
                    github_org="togethercomputer",
                    blog_url="https://www.together.ai/blog",
-                   blog_rss_url="https://www.together.ai/blog/rss.xml"),
+                   blog_rss_url="https://www.together.ai/blog/rss.xml",
+                   packages=(("pypi", "together"),)),
     # Observability / voice
     WatchlistEntry("Arize AI",    "arize",      "greenhouse", "arizeai",
                    github_org="Arize-ai",
                    blog_url="https://arize.com/blog",
-                   blog_rss_url="https://arize.com/feed/"),
+                   blog_rss_url="https://arize.com/feed/",
+                   packages=(("pypi", "arize"), ("pypi", "arize-phoenix"))),
     WatchlistEntry("Cartesia AI", "cartesia",   "ashby",      "cartesia",
                    github_org="cartesia-ai",
-                   blog_url="https://cartesia.ai/blog"),
+                   blog_url="https://cartesia.ai/blog",
+                   packages=(("pypi", "cartesia"), ("npm", "@cartesia/cartesia-js"))),
 ]
 
 # ---------------------------------------------------------------------------
@@ -213,13 +234,15 @@ def upsert_company(
     github_org: str | None = None,
     blog_url: str | None = None,
     blog_rss_url: str | None = None,
+    packages: tuple[tuple[str, str], ...] = (),
 ) -> None:
     board_url = _BOARD_URL[ats].format(slug=ats_slug)
+    packages_json = [{"registry": r, "package": p} for r, p in packages]
     conn.execute(
         """
         INSERT INTO companies (slug, name, ats, ats_slug, board_url,
-                               github_org, blog_url, blog_rss_url, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                               github_org, blog_url, blog_rss_url, packages, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (slug) DO UPDATE
             SET ats          = EXCLUDED.ats,
                 ats_slug     = EXCLUDED.ats_slug,
@@ -227,9 +250,11 @@ def upsert_company(
                 github_org   = EXCLUDED.github_org,
                 blog_url     = EXCLUDED.blog_url,
                 blog_rss_url = EXCLUDED.blog_rss_url,
+                packages     = EXCLUDED.packages,
                 updated_at   = NOW()
         """,
-        (slug, name, ats, ats_slug, board_url, github_org, blog_url, blog_rss_url),
+        (slug, name, ats, ats_slug, board_url, github_org, blog_url, blog_rss_url,
+         Jsonb(packages_json)),
     )
 
 
@@ -261,7 +286,8 @@ async def resolve_and_cache(
     upsert_company(entry.slug, entry.name, ats, ats_slug, conn,
                    github_org=entry.github_org,
                    blog_url=entry.blog_url,
-                   blog_rss_url=entry.blog_rss_url)
+                   blog_rss_url=entry.blog_rss_url,
+                   packages=entry.packages)
     return (ats, ats_slug)
 
 

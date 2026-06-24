@@ -118,6 +118,9 @@ CREATE TABLE IF NOT EXISTS watermarks (
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS github_org   TEXT;  -- e.g. 'anthropics'
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS blog_url     TEXT;  -- e.g. 'https://anthropic.com/blog'
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS blog_rss_url TEXT;  -- null when no RSS feed detected
+-- Published packages whose download trends proxy product adoption.
+-- JSONB array of {"registry": "pypi"|"npm", "package": "..."} objects.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS packages     JSONB NOT NULL DEFAULT '[]';
 
 -- ---------------------------------------------------------------------------
 -- github_releases
@@ -175,3 +178,23 @@ CREATE TABLE IF NOT EXISTS blog_posts (
 
 CREATE INDEX IF NOT EXISTS blog_posts_company_at_idx
     ON blog_posts (company_slug, published_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- package_downloads
+-- npm/PyPI rolling download counts. One row per (registry, package, run).
+-- Time-series; never updated. Diff consecutive rows to get adoption trajectory.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS package_downloads (
+    id              BIGSERIAL   PRIMARY KEY,
+    company_slug    TEXT        NOT NULL REFERENCES companies(slug),
+    registry        TEXT        NOT NULL,              -- 'pypi' | 'npm'
+    package         TEXT        NOT NULL,              -- e.g. 'anthropic' or '@anthropic-ai/sdk'
+    measured_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_day        INTEGER,                           -- rolling 1-day total (null if source omits)
+    last_week       INTEGER,                           -- rolling 7-day total
+    last_month      INTEGER,                           -- rolling 30-day total
+    raw             JSONB       NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS package_downloads_company_pkg_idx
+    ON package_downloads (company_slug, registry, package, measured_at DESC);
