@@ -1,25 +1,23 @@
 # Skills trend agent.
 #
-# Trigger is manual (workflow_dispatch) by design. The agent's LLM nodes are
-# canonically local Ollama (qwen2.5:14b, ~17GB) — a standard GitHub-hosted runner
-# cannot run that model, and a full run is multi-hour (see JAR-60). To put this on
-# a real cron you need EITHER:
-#   * a self-hosted runner with Ollama (swap `runs-on` below, then enable `schedule`), OR
-#   * switch config.py to the Anthropic models and provide ANTHROPIC_API_KEY.
-# The `schedule` block is left commented so enabling cron is a one-line change once
-# one of those is in place. Ingestion (ingest.yml) already runs on cron and is what
-# this agent reads from.
+# Runs on Ollama Cloud: the LLM nodes call https://ollama.com via OLLAMA_API_KEY,
+# so a standard GitHub-hosted runner is enough (no local Ollama / GPU needed).
+# config.build_ollama switches to the cloud host the moment OLLAMA_API_KEY is set;
+# the model assignments come from EXTRACTION_MODEL / SYNTHESIS_MODEL below.
+#
+# Required repo secret: OLLAMA_API_KEY (https://ollama.com/settings/keys).
+# Reads from the store that ingest.yml populates on cron.
 name: Run skills agent
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "0 9 * * 1"   # weekly, Mon 09:00 UTC — enable on a self-hosted Ollama runner
+  schedule:
+    - cron: "0 10 * * 1"   # weekly, Mon 10:00 UTC (after the daily tracker run)
 
 jobs:
   run-skills:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -39,5 +37,8 @@ jobs:
           NOTION_SKILLS_RADAR_PAGE_ID: ${{ secrets.NOTION_SKILLS_RADAR_PAGE_ID }}
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # needed if config.py uses Anthropic
+          # Ollama Cloud — key alone routes models to https://ollama.com
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          EXTRACTION_MODEL: gpt-oss:20b
+          SYNTHESIS_MODEL: gpt-oss:120b
         run: python scripts/run_skills.py
