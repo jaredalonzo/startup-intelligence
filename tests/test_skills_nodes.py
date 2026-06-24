@@ -257,6 +257,47 @@ class _FakeStructuredLLM:
         return _FakeChain(self._result)
 
 
+def test_extract_one_degrades_to_empty_on_persistent_failure(monkeypatch):
+    # A posting whose extraction keeps failing must not abort the run — it yields
+    # an empty extraction so trends just exclude it.
+    monkeypatch.setattr(nodes.time, "sleep", lambda *_: None)  # no real backoff in tests
+    calls = {"n": 0}
+
+    def _boom(posting, llm=None):
+        calls["n"] += 1
+        raise RuntimeError("cloud 429")
+
+    monkeypatch.setattr(nodes, "extract_posting_fields", _boom)
+
+    posting = {"id": "p9", "ats": "ashby", "company_slug": "openai", "title": "SRE"}
+    out = extract_one({"posting": posting})
+
+    [ex] = out["extractions"]
+    assert (ex.posting_id, ex.ats, ex.company_slug) == ("p9", "ashby", "openai")
+    assert ex.skills == [] and ex.platforms == [] and ex.seniority is None
+    assert calls["n"] == 2  # retried before giving up
+
+
+def test_extract_one_retries_then_succeeds(monkeypatch):
+    monkeypatch.setattr(nodes.time, "sleep", lambda *_: None)
+    result = _PostingExtraction(skills=["Go"], platforms=["AWS"], seniority="staff",
+                                years_experience=4)
+    calls = {"n": 0}
+
+    def _flaky(posting, llm=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+        return result
+
+    monkeypatch.setattr(nodes, "extract_posting_fields", _flaky)
+
+    out = extract_one({"posting": {"id": "p1", "ats": "ashby", "company_slug": "openai"}})
+    [ex] = out["extractions"]
+    assert ex.skills == ["Go"] and ex.seniority == "staff"
+    assert calls["n"] == 2
+
+
 def test_extract_one_maps_model_output_and_posting_comp(monkeypatch):
     result = _PostingExtraction(skills=["Kubernetes"], platforms=["AWS"],
                                 seniority="senior", years_experience=5)

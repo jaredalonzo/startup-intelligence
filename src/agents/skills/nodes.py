@@ -9,6 +9,7 @@ from __future__ import annotations
 import functools
 import logging
 import pathlib
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
@@ -402,6 +403,35 @@ def extract_posting_fields(posting: dict[str, Any], llm: Any = None) -> _Posting
     return result
 
 
+_EMPTY_EXTRACTION = _PostingExtraction(skills=[], platforms=[], seniority=None, years_experience=None)
+
+
+def _extract_with_retry(posting: dict[str, Any], attempts: int = 2) -> _PostingExtraction:
+    """Extract one posting, retrying transient failures, then degrading to empty.
+
+    Per-posting isolation: the fan-out runs serialized (one cloud call at a time),
+    so a single transient error (429/timeout) or an unparseable model response must
+    not abort the whole run. Retry covers transient blips; a final miss yields an
+    empty extraction so the posting is excluded from trends rather than crashing.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return extract_posting_fields(posting)
+        except Exception:
+            logger.warning(
+                "extract_one: extraction failed for posting %s (attempt %d/%d)",
+                posting.get("id"), attempt, attempts,
+                exc_info=(attempt == attempts),
+            )
+            if attempt < attempts:
+                time.sleep(1.0 * attempt)
+    logger.error(
+        "extract_one: giving up on posting %s after %d attempts; emitting empty extraction",
+        posting.get("id"), attempts,
+    )
+    return _EMPTY_EXTRACTION
+
+
 def extract_one(state: dict) -> dict:
     """Extract skills, platforms, seniority, and comp from a single posting.
 
@@ -409,7 +439,7 @@ def extract_one(state: dict) -> dict:
     Returns {"extractions": [SkillExtraction]} — merged via operator.add.
     """
     posting = state["posting"]
-    fields = extract_posting_fields(posting)
+    fields = _extract_with_retry(posting)
     extraction = SkillExtraction(
         posting_id=posting["id"],
         ats=posting["ats"],

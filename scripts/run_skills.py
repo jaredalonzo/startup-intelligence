@@ -122,7 +122,15 @@ def main() -> None:
         graph = compile_graph(checkpointer)
         result = graph.invoke(
             initial,
-            config={"configurable": {"thread_id": _THREAD_ID}, "callbacks": [guard]},
+            # max_concurrency=1 serializes the extract_one fan-out: Ollama Cloud's
+            # free tier allows a single concurrent request, so parallel extractions
+            # would be rejected (429). The tracker is already a sequential map, so
+            # only the skills agent's fan-out needs this guard.
+            config={
+                "configurable": {"thread_id": _THREAD_ID},
+                "callbacks": [guard],
+                "max_concurrency": 1,
+            },
         )
     guard.log_summary()
 
