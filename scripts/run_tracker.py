@@ -168,6 +168,52 @@ def _print_summary(rows: list[dict]) -> None:
           f"errors={sum(r.get('error', False) for r in rows)}")
 
 
+def _write_step_summary(rows: list[dict]) -> None:
+    """Append a Markdown run summary to GITHUB_STEP_SUMMARY (CI only; no-op locally).
+
+    Reports from the in-memory rows because the composite score, classification,
+    and top-mover flags are computed in-graph and never persisted to the store —
+    a DB query (the ingest-summary pattern) couldn't reproduce them.
+    """
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+
+    from datetime import datetime, timezone
+
+    def _key(r: dict) -> float:
+        return r["composite"] if r.get("composite") is not None else float("-inf")
+
+    scored = [r for r in rows if r.get("composite") is not None]
+    lines = [
+        f"## Tracker Run — {datetime.now(timezone.utc):%Y-%m-%d}",
+        "",
+        f"**{len(rows)} companies** · resolved {sum(r.get('resolved', False) for r in rows)} · "
+        f"changed {sum(r.get('changed', False) for r in rows)} · scored {len(scored)} · "
+        f"top movers {sum(r.get('top_mover', False) for r in rows)} · "
+        f"errors {sum(r.get('error', False) for r in rows)}",
+        "",
+        "| Company | Resolved | Changed | Composite | Class | Top? | Dossier |",
+        "|---|---|:--:|--:|---|:--:|---|",
+    ]
+    for r in sorted(rows, key=_key, reverse=True):
+        if r.get("error"):
+            lines.append(f"| {r['slug']} | ⚠️ ERROR | | | | | |")
+            continue
+        comp = f"{r['composite']:.2f}" if r["composite"] is not None else "—"
+        resolved = f"yes ({r['method']})" if r["resolved"] else "no"
+        url = r.get("dossier_url")
+        link = f"[dossier]({url})" if url and str(url).startswith("http") else "—"
+        lines.append(
+            f"| {r['slug']} | {resolved} | {'yes' if r['changed'] else 'no'} | {comp} | "
+            f"{r.get('classification') or '—'} | {'★' if r['top_mover'] else ''} | {link} |"
+        )
+    lines.append("")
+
+    with open(path, "a") as f:
+        f.write("\n".join(lines))
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Run the startup tracker agent.")
     parser.add_argument("--slug", action="append", dest="slugs",
@@ -200,6 +246,7 @@ async def main() -> None:
 
     guard.log_summary()
     _print_summary(rows)
+    _write_step_summary(rows)
 
 
 if __name__ == "__main__":

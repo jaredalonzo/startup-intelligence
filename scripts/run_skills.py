@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,6 +35,67 @@ log = logging.getLogger(__name__)
 init_tracing()
 
 _THREAD_ID = "skills-agent"
+
+
+def _write_step_summary(result: dict) -> None:
+    """Append a Markdown run summary to GITHUB_STEP_SUMMARY (CI only; no-op locally).
+
+    Built from the graph result: the TrendReport (rising/falling/new skills,
+    platforms) is the run's product and is computed in-graph, so it is reported
+    straight from memory rather than re-derived from the store.
+    """
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+
+    report = result.get("trend_report")
+    postings = len(result.get("new_postings") or [])
+    extractions = len(result.get("extractions") or [])
+    digest = result.get("radar_digest")
+    unknown = result.get("unknown_skills") or []
+
+    lines = [f"## Skills Agent Run — {datetime.now(timezone.utc):%Y-%m-%d}", ""]
+
+    if report is None:
+        lines += ["No new postings since the last watermark — extraction and trend "
+                  "synthesis were skipped.", ""]
+        with open(path, "a") as f:
+            f.write("\n".join(lines))
+        return
+
+    lines += [
+        f"**{postings} new postings**, {extractions} extractions · "
+        f"digest: {'written to Notion' if digest else 'skipped'} · "
+        f"window {report.window_days}d · corpus {report.total_postings} postings",
+        "",
+    ]
+
+    def _trend_table(title: str, trends: list, n: int = 10) -> list[str]:
+        out = [f"### {title}", "| Skill | Now | Prev | Δ | % postings |", "|---|--:|--:|--:|--:|"]
+        for t in trends[:n]:
+            out.append(f"| {t.skill} | {t.count_current} | {t.count_previous} | "
+                       f"{t.delta:+d} | {t.pct_of_postings:.0%} |")
+        out.append("")
+        return out
+
+    if report.rising:
+        lines += _trend_table("Rising skills", report.rising)
+    if report.falling:
+        lines += _trend_table("Falling skills", report.falling)
+    if report.new:
+        names = [getattr(x, "skill", x) for x in report.new]
+        lines += ["### Newly appearing", ", ".join(str(n) for n in names) or "—", ""]
+    if report.top_platforms:
+        lines += ["### Top platforms", "| Platform | Now | % postings |", "|---|--:|--:|"]
+        for t in report.top_platforms[:10]:
+            lines.append(f"| {t.skill} | {t.count_current} | {t.pct_of_postings:.0%} |")
+        lines.append("")
+    if unknown:
+        lines += [f"### Unknown skills flagged for taxonomy review ({len(unknown)})",
+                  ", ".join(unknown[:40]), ""]
+
+    with open(path, "a") as f:
+        f.write("\n".join(lines))
 
 
 def main() -> None:
@@ -74,6 +136,7 @@ def main() -> None:
         extractions_count,
         "written to Notion" if digest else "skipped (no new postings)",
     )
+    _write_step_summary(result)
 
 
 if __name__ == "__main__":
