@@ -37,6 +37,7 @@ from config import (
     TRACKER_SCORE_CAPS,
     TRACKER_SCORE_WEIGHTS,
 )
+from llm_structured import structured
 from outputs.linear import create_top_mover_task
 from outputs.notion import upsert_company_dossier
 from store.db import get_connection
@@ -387,7 +388,7 @@ def score_trending(state: TrackerState) -> dict:
     composite = _composite(signals)
     classification, is_top_mover = _classify(composite)
 
-    explain = SYNTHESIS_LLM.with_structured_output(_TrendRationale)
+    explain = structured(SYNTHESIS_LLM, _TrendRationale)
     out: _TrendRationale = explain.invoke([  # type: ignore[assignment]
         SystemMessage(content=(
             "A startup's momentum has already been classified as accelerating, steady, or "
