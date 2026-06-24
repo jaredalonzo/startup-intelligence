@@ -36,11 +36,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from langchain_ollama import ChatOllama
 from langsmith import Client, evaluate
-from pydantic import BaseModel
 
 from agents.skills.nodes import extract_posting_fields
+from config import EVAL_JUDGE_MODEL
+from eval.extraction_quality import make_offline_evaluator
+from eval.llm import build_llm
 from store.db import get_connection
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -51,16 +52,6 @@ _DATASET = "skills-extraction-eval"
 # Page to …"), not real JDs — they would poison the extraction eval. Real JDs run
 # into the thousands of characters.
 _MIN_DESC_CHARS = 300
-
-
-def _build_llm(model: str) -> Any:
-    """Construct a chat model by name. claude-* → Anthropic (lazy import); else Ollama.
-
-    temperature=0 for determinism so the comparison reflects the model, not sampling."""
-    if model.startswith("claude"):
-        from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=model, temperature=0, max_tokens=1024)  # type: ignore[call-arg]
-    return ChatOllama(model=model, temperature=0)
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +207,7 @@ def build_dataset(sample: int) -> None:
 
 def make_target(model: str):
     """Return a LangSmith target fn that runs the real extraction with `model`."""
-    llm = _build_llm(model)
+    llm = build_llm(model)
 
     def target(inputs: dict[str, Any]) -> dict[str, Any]:
         return extract_posting_fields(inputs, llm).model_dump()
@@ -224,40 +215,9 @@ def make_target(model: str):
     return target
 
 
-# ---------------------------------------------------------------------------
-# Evaluator — LLM-as-judge for extraction quality (latency/tokens are auto-captured)
-# ---------------------------------------------------------------------------
-
-class _Judgment(BaseModel):
-    score: float        # 0.0 (wrong/empty) .. 1.0 (accurate and complete)
-    rationale: str
-
-
-def make_quality_judge(judge_model: str):
-    judge = _build_llm(judge_model).with_structured_output(_Judgment)
-
-    def quality_judge(run: Any, example: Any) -> dict[str, Any]:
-        """Score how well the extraction reflects the posting. Reference-free:
-        judges the extracted skills/platforms against the JD text itself."""
-        out = run.outputs or {}
-        jd = example.inputs.get("description_text", "")[:6000]
-        verdict: _Judgment = judge.invoke([
-            {"role": "system", "content": (
-                "You grade skill-extraction quality from job postings. Given the JD text and a "
-                "candidate extraction, score 0-1: are the listed skills/platforms actually "
-                "required by the JD (precision), are obvious ones missing (recall), are names "
-                "canonical, and is seniority right? Penalize hallucinated or generic entries."
-            )},
-            {"role": "user", "content": (
-                f"JD:\n{jd}\n\nEXTRACTION:\n"
-                f"skills={out.get('skills')}\nplatforms={out.get('platforms')}\n"
-                f"seniority={out.get('seniority')}\nyears_experience={out.get('years_experience')}"
-            )},
-        ])
-        return {"key": "extraction_quality", "score": verdict.score, "comment": verdict.rationale}
-
-    return quality_judge
-
+# The LLM-as-judge for extraction quality lives in eval.extraction_quality so it
+# is shared with the online evaluator (scripts/online_eval.py). Latency and token
+# usage are captured automatically by LangSmith per example.
 
 # ---------------------------------------------------------------------------
 
@@ -268,7 +228,7 @@ def main() -> None:
     parser.add_argument("--sample", type=int, default=30, help="Dataset size when building.")
     parser.add_argument("--models", nargs="+", default=["qwen2.5:14b"],
                         help="Candidate models to compare (one Experiment each).")
-    parser.add_argument("--judge-model", default="qwen2.5:14b",
+    parser.add_argument("--judge-model", default=EVAL_JUDGE_MODEL,
                         help="Model used as the quality judge (a stronger model is recommended).")
     args = parser.parse_args()
 
@@ -280,7 +240,7 @@ def main() -> None:
         build_dataset(args.sample)
         return
 
-    judge = make_quality_judge(args.judge_model)
+    judge = make_offline_evaluator(build_llm(args.judge_model))
     for model in args.models:
         log.info("Evaluating model %r (judge=%r)…", model, args.judge_model)
         # max_concurrency=1: serialize calls so a queued local model (OLLAMA_NUM_PARALLEL=1)

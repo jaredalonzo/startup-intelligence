@@ -128,3 +128,17 @@ LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "startup-intelligence")
 # Ollama may not report them, so the call budget is the reliable rail.
 LLM_CALL_BUDGET_PER_RUN = int(os.getenv("LLM_CALL_BUDGET_PER_RUN", "5000"))
 LLM_TOKEN_BUDGET_PER_RUN = int(os.getenv("LLM_TOKEN_BUDGET_PER_RUN", "5000000"))
+
+# ---------------------------------------------------------------------------
+# Evaluation — LLM-as-judge for extraction quality (eval/extraction_quality.py)
+# ---------------------------------------------------------------------------
+
+# Model that grades extraction quality, both in the offline bake-off
+# (scripts/eval_models.py, overridable via --judge-model) and the online
+# evaluator over live traces (scripts/online_eval.py). A stronger model than the
+# extraction model is recommended so the judge isn't graded by its own peer.
+EVAL_JUDGE_MODEL = os.getenv("EVAL_JUDGE_MODEL", "qwen2.5:14b")
+
+# LangSmith feedback key the judge writes; also the run name it scores online.
+EVAL_FEEDBACK_KEY = "extraction_quality"
+EVAL_EXTRACTION_RUN_NAME = "extract_one"
