@@ -6,6 +6,8 @@ Returns a `jobPostings` array. Ashby has the best structured compensation data o
 """
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from ._utils import parse_dt, strip_html
@@ -33,7 +35,7 @@ async def fetch_postings(slug: str, client: httpx.AsyncClient) -> list[Posting]:
     return [_normalize(slug, j) for j in postings]
 
 
-def _normalize(company_slug: str, j: dict) -> Posting:
+def _normalize(company_slug: str, j: dict[str, Any]) -> Posting:
     comp_entry = _primary_comp_entry(j.get("compensation"))
     raw_et = j.get("employmentType") or ""
     # Ashby only exposes publishedAt; no separate updatedAt on the public API.
@@ -64,7 +66,7 @@ def _normalize(company_slug: str, j: dict) -> Posting:
     )
 
 
-def _primary_comp_entry(compensation: dict | None) -> dict | None:
+def _primary_comp_entry(compensation: dict[str, Any] | None) -> dict[str, Any] | None:
     if not compensation:
         return None
     entries = compensation.get("entries") or []
@@ -72,7 +74,7 @@ def _primary_comp_entry(compensation: dict | None) -> dict | None:
     return next((e for e in entries if e.get("type") == "Salary"), entries[0] if entries else None)
 
 
-def _int_or_none(entry: dict | None, key: str) -> int | None:
+def _int_or_none(entry: dict[str, Any] | None, key: str) -> int | None:
     if not entry:
         return None
     val = entry.get(key)

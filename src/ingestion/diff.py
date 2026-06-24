@@ -6,6 +6,8 @@ updated to NOW() for all currently-live postings, making the comparison invalid.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import psycopg
 
 
@@ -13,7 +15,7 @@ def compute_diff(
     company_slug: str,
     ats: str,
     current_ids: set[str],
-    conn: psycopg.Connection,  # type: ignore[type-arg]
+    conn: psycopg.Connection[dict[str, Any]],
 ) -> tuple[list[str], list[str]]:
     """Return (new_ids, removed_ids) relative to the previous ingestion run.
 

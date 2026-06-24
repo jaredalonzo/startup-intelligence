@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import httpx
 
@@ -35,7 +36,7 @@ async def fetch_postings(slug: str, client: httpx.AsyncClient) -> list[Posting]:
     )
     postings = []
     for sc, result in zip(shortcodes, raw):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             logging.getLogger(__name__).warning(
                 "workable detail fetch failed %s/%s: %s", slug, sc, result
             )
@@ -44,15 +45,16 @@ async def fetch_postings(slug: str, client: httpx.AsyncClient) -> list[Posting]:
     return postings
 
 
-async def _fetch_detail(slug: str, shortcode: str, client: httpx.AsyncClient) -> dict:
+async def _fetch_detail(slug: str, shortcode: str, client: httpx.AsyncClient) -> dict[str, Any]:
     r = await client.get(_DETAIL_URL.format(slug=slug, shortcode=shortcode), timeout=10.0)
     r.raise_for_status()
-    return r.json()
+    data: dict[str, Any] = r.json()
+    return data
 
 
-def _normalize(company_slug: str, job: dict) -> Posting:
+def _normalize(company_slug: str, job: dict[str, Any]) -> Posting:
     dept_list: list[str] = job.get("department") or []
-    loc: dict = job.get("location") or {}
+    loc: dict[str, Any] = job.get("location") or {}
     location_str = ", ".join(filter(None, [loc.get("city"), loc.get("country")])) or None
 
     # Concatenate all HTML description sections

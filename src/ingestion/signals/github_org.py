@@ -141,7 +141,7 @@ async def fetch_github_signals(
 def write_github_signals(
     releases: list[GithubRelease],
     snapshots: list[GithubRepoSnapshot],
-    conn: psycopg.Connection,  # type: ignore[type-arg]
+    conn: psycopg.Connection[dict[str, Any]],
 ) -> tuple[int, int]:
     """Insert releases (skip duplicates) and repo stat snapshots.
 

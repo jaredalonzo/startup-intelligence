@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 from datetime import date, datetime, timezone
-from typing import Iterator
+from typing import Any, Iterator
 
 import httpx
 
@@ -83,11 +83,11 @@ def write_skills_digest(digest: str, run_date: date | None = None) -> str:
 # Tracker dossiers — one living page per company, updated in place each run.
 # ---------------------------------------------------------------------------
 
-def _iter_child_blocks(client: httpx.Client, parent_id: str) -> Iterator[dict]:  # type: ignore[type-arg]
+def _iter_child_blocks(client: httpx.Client, parent_id: str) -> Iterator[dict[str, Any]]:
     """Yield every child block of a Notion page, following pagination."""
     cursor: str | None = None
     while True:
-        params = {"page_size": 100}
+        params: dict[str, Any] = {"page_size": 100}
         if cursor:
             params["start_cursor"] = cursor
         resp = client.get(

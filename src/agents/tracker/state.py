@@ -1,7 +1,7 @@
 """State objects for the startup tracker agent graph."""
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -75,12 +75,12 @@ class DossierInputs(BaseModel):
     sample_titles: list[str] = Field(default_factory=list)
 
     # Technology / product (GitHub releases + star trajectory)
-    recent_releases: list[dict] = Field(default_factory=list)       # {repo, tag, name, published_at}
+    recent_releases: list[dict[str, Any]] = Field(default_factory=list)  # {repo, tag, name, published_at}
     star_delta_by_repo: list[tuple[str, int]] = Field(default_factory=list)
     new_release_count: int = 0                     # releases first seen since the previous snapshot
 
     # Product evolution (engineering blog / changelog)
-    recent_blog_posts: list[dict] = Field(default_factory=list)     # {title, url, published_at}
+    recent_blog_posts: list[dict[str, Any]] = Field(default_factory=list)  # {title, url, published_at}
     new_blog_count: int = 0                        # posts first seen since the previous snapshot
 
 
@@ -105,7 +105,7 @@ class TrendScore(BaseModel):
 # Tracker agent state
 # ---------------------------------------------------------------------------
 
-class TrackerState(dict):
+class TrackerState(TypedDict):
     """State for the tracker agent graph.
 
     The tracker maps over companies; each invocation handles one company, so
@@ -124,7 +124,7 @@ class TrackerState(dict):
     The fetch_signals / snapshot / diff nodes (JAR-55) write the store that
     load_signals reads; they slot in ahead of load_signals once built.
     """
-    company: dict
+    company: dict[str, Any]
     resolution: BoardResolution | None
     signals: DossierInputs | None
     meaningful_change: bool

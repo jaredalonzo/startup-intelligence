@@ -6,6 +6,8 @@ Lever is the only ATS that provides seniority (categories.level) as a structured
 """
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from ._utils import ms_to_dt
@@ -20,7 +22,7 @@ async def fetch_postings(slug: str, client: httpx.AsyncClient) -> list[Posting]:
     return [_normalize(slug, p) for p in resp.json()]
 
 
-def _normalize(company_slug: str, p: dict) -> Posting:
+def _normalize(company_slug: str, p: dict[str, Any]) -> Posting:
     cats = p.get("categories") or {}
     # Lever splits description into main body + "additional" (requirements/benefits)
     html_parts = [p.get("description") or "", p.get("additional") or ""]

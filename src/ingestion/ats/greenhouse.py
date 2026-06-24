@@ -6,6 +6,8 @@ Greenhouse does not provide seniority, compensation, or remote flags as structur
 """
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from ._utils import parse_dt, strip_html
@@ -20,7 +22,7 @@ async def fetch_postings(slug: str, client: httpx.AsyncClient) -> list[Posting]:
     return [_normalize(slug, job) for job in resp.json().get("jobs", [])]
 
 
-def _normalize(company_slug: str, job: dict) -> Posting:
+def _normalize(company_slug: str, job: dict[str, Any]) -> Posting:
     departments = job.get("departments") or []
     return Posting(
         id=str(job["id"]),

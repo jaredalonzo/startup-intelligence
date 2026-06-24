@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -25,7 +26,7 @@ def _is_eng(p: Posting) -> bool:
     )
 
 
-def upsert_postings(postings: list[Posting], conn: psycopg.Connection) -> None:  # type: ignore[type-arg]
+def upsert_postings(postings: list[Posting], conn: psycopg.Connection[dict[str, Any]]) -> None:
     """Insert new postings or update existing ones; always advances last_seen_at."""
     for p in postings:
         conn.execute(
@@ -79,7 +80,7 @@ def write_snapshot(
     current_postings: list[Posting],
     new_ids: list[str],
     removed_ids: list[str],
-    conn: psycopg.Connection,  # type: ignore[type-arg]
+    conn: psycopg.Connection[dict[str, Any]],
 ) -> int:
     """Append a snapshot row; never updates existing rows. Returns the new snapshot ID."""
     eng_count = sum(1 for p in current_postings if _is_eng(p))
@@ -98,7 +99,7 @@ def write_snapshot(
 def update_watermark(
     company_slug: str,
     ats: str,
-    conn: psycopg.Connection,  # type: ignore[type-arg]
+    conn: psycopg.Connection[dict[str, Any]],
 ) -> None:
     conn.execute(
         """

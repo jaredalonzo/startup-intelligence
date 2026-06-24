@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 import psycopg
@@ -219,7 +220,7 @@ async def probe_ats(slug: str, client: httpx.AsyncClient) -> tuple[ATSSource, st
 # DB helpers
 # ---------------------------------------------------------------------------
 
-def get_cached(slug: str, conn: psycopg.Connection) -> dict | None:  # type: ignore[type-arg]
+def get_cached(slug: str, conn: psycopg.Connection[dict[str, Any]]) -> dict[str, Any] | None:
     return conn.execute(
         "SELECT ats, ats_slug FROM companies WHERE slug = %s", (slug,)
     ).fetchone()
@@ -230,7 +231,7 @@ def upsert_company(
     name: str,
     ats: ATSSource,
     ats_slug: str,
-    conn: psycopg.Connection,  # type: ignore[type-arg]
+    conn: psycopg.Connection[dict[str, Any]],
     github_org: str | None = None,
     blog_url: str | None = None,
     blog_rss_url: str | None = None,
@@ -264,7 +265,7 @@ def upsert_company(
 
 async def resolve_and_cache(
     entry: WatchlistEntry,
-    conn: psycopg.Connection,  # type: ignore[type-arg]
+    conn: psycopg.Connection[dict[str, Any]],
     client: httpx.AsyncClient,
 ) -> tuple[ATSSource, str] | None:
     """Return ``(ats, ats_slug)`` for *entry*, probing and caching if needed."""
@@ -292,7 +293,7 @@ async def resolve_and_cache(
 
 
 async def seed_companies(
-    conn: psycopg.Connection,  # type: ignore[type-arg]
+    conn: psycopg.Connection[dict[str, Any]],
     client: httpx.AsyncClient,
     companies: list[WatchlistEntry] | None = None,
 ) -> dict[str, tuple[ATSSource, str] | None]:

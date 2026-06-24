@@ -20,6 +20,7 @@ from typing import Iterator, Literal
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -50,7 +51,7 @@ def _fan_out_extractions(state: SkillsState) -> list[Send]:
 # Graph construction
 # ---------------------------------------------------------------------------
 
-def build_graph() -> StateGraph:
+def build_graph() -> StateGraph[SkillsState]:
     g = StateGraph(SkillsState)
 
     g.add_node("load_deltas",        nodes.load_deltas)
@@ -75,7 +76,7 @@ def build_graph() -> StateGraph:
     return g
 
 
-def compile_graph(checkpointer: PostgresSaver | None = None):
+def compile_graph(checkpointer: PostgresSaver | None = None) -> CompiledStateGraph[SkillsState]:
     """Compile the skills graph, optionally with a Postgres checkpointer."""
     g = build_graph()
     return g.compile(checkpointer=checkpointer)

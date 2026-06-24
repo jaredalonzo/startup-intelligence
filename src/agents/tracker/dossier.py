@@ -55,14 +55,14 @@ def _delta(curr: int | None, prev: int | None) -> int | None:
     return curr - prev
 
 
-def _count_since(rows: list[dict], since: datetime | None) -> int:
+def _count_since(rows: list[dict[str, Any]], since: datetime | None) -> int:
     """How many rows were first seen at/after *since* (the previous snapshot)."""
     if since is None:
         return 0
     return sum(1 for r in rows if r.get("first_seen_at") and r["first_seen_at"] >= since)
 
 
-def _star_deltas(rows: list[dict]) -> list[tuple[str, int]]:
+def _star_deltas(rows: list[dict[str, Any]]) -> list[tuple[str, int]]:
     """Latest-vs-previous star delta per repo, from measured_at-DESC rows."""
     seen: dict[str, list[int]] = {}
     for r in rows:
@@ -74,7 +74,7 @@ def _star_deltas(rows: list[dict]) -> list[tuple[str, int]]:
     return sorted(deltas, key=lambda t: -t[1])
 
 
-def load_signals(state: TrackerState) -> dict:
+def load_signals(state: TrackerState) -> dict[str, Any]:
     """Assemble the per-company dossier inputs from the persisted store.
 
     Reads the most recent snapshots (for the headcount/open-position deltas),
@@ -287,7 +287,7 @@ State that no customer signal is wired yet.
 Be specific and cite the numbers above. Keep each section to 2–4 sentences or bullets."""
 
 
-def synthesize_dossier(state: TrackerState) -> dict:
+def synthesize_dossier(state: TrackerState) -> dict[str, Any]:
     """Write the per-company narrative across the five metrics, emphasizing deltas."""
     signals = state.get("signals")
     if signals is None:
@@ -377,7 +377,7 @@ def _classify(composite: float) -> tuple[Literal["accelerating", "steady", "cool
     return "steady", False
 
 
-def score_trending(state: TrackerState) -> dict:
+def score_trending(state: TrackerState) -> dict[str, Any]:
     """Composite momentum score + classification (both deterministic); the LLM
     only writes the rationale prose, so it cannot disagree with the score.
     """
@@ -389,7 +389,7 @@ def score_trending(state: TrackerState) -> dict:
     classification, is_top_mover = _classify(composite)
 
     explain = structured(SYNTHESIS_LLM, _TrendRationale)
-    out: _TrendRationale = explain.invoke([  # type: ignore[assignment]
+    out: _TrendRationale = explain.invoke([
         SystemMessage(content=(
             "A startup's momentum has already been classified as accelerating, steady, or "
             "cooling from its hiring and engineering-activity deltas. In one sentence, explain "
@@ -425,7 +425,7 @@ def score_trending(state: TrackerState) -> dict:
 # write_dossier (deterministic — Notion upsert + Linear top-mover flag)
 # ---------------------------------------------------------------------------
 
-def write_dossier(state: TrackerState) -> dict:
+def write_dossier(state: TrackerState) -> dict[str, Any]:
     """Upsert the company's Notion dossier; open/refresh a Linear task for top movers.
 
     An outputs failure (Notion or Linear) must not abort the map over companies,

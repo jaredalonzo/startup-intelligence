@@ -9,7 +9,7 @@ import os
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 import psycopg
 import psycopg.rows
@@ -42,7 +42,7 @@ def apply_schema() -> None:
 
 
 @contextmanager
-def get_connection() -> Iterator[psycopg.Connection]:  # type: ignore[type-arg]
+def get_connection() -> Iterator[psycopg.Connection[dict[str, Any]]]:
     """Context manager: yields a psycopg3 connection and always closes it on exit.
 
     psycopg3's Connection.__exit__ manages transactions only — it does not close
@@ -93,7 +93,7 @@ def get_agent_watermark(agent: str) -> datetime | None:
 def set_agent_watermark(
     agent: str,
     ts: datetime,
-    conn: psycopg.Connection | None = None,  # type: ignore[type-arg]
+    conn: psycopg.Connection[dict[str, Any]] | None = None,
 ) -> None:
     """Upsert the agent's last-run watermark.
 

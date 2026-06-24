@@ -152,7 +152,7 @@ async def fetch_package_downloads(
 
 def write_package_downloads(
     rows: list[PackageDownloads],
-    conn: psycopg.Connection,  # type: ignore[type-arg]
+    conn: psycopg.Connection[dict[str, Any]],
 ) -> int:
     """Append download snapshots (time-series — never updated). Returns row count."""
     for d in rows:

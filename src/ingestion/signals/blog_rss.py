@@ -45,7 +45,8 @@ def _parse_published(entry: Any) -> datetime | None:
         t = getattr(entry, attr, None)
         if t is not None:
             try:
-                return datetime(*t[:6], tzinfo=timezone.utc)
+                y, mo, d, h, mi, s = t[:6]
+                return datetime(y, mo, d, h, mi, s, tzinfo=timezone.utc)
             except Exception:
                 pass
     return None
@@ -122,7 +123,7 @@ async def fetch_blog_posts(
 
 def write_blog_posts(
     posts: list[BlogPost],
-    conn: psycopg.Connection,  # type: ignore[type-arg]
+    conn: psycopg.Connection[dict[str, Any]],
 ) -> int:
     """Insert new posts, skipping duplicates. Returns the count of new rows."""
     new_count = 0

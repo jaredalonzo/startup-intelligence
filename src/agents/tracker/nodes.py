@@ -19,10 +19,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 import httpx
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from pydantic import BaseModel, Field
 
 from agents.tracker.state import BoardResolution, TrackerState
@@ -63,7 +70,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _seed_candidates(company: dict) -> list[str]:
+def _seed_candidates(company: dict[str, Any]) -> list[str]:
     """Deterministic, zero-cost slug guesses to try before invoking the LLM.
 
     Order matters: a trusted watchlist hint first, then the internal key, then a
@@ -78,7 +85,7 @@ def _seed_candidates(company: dict) -> list[str]:
     return candidates
 
 
-def _describe_company(company: dict, *, already_tried: list[str]) -> str:
+def _describe_company(company: dict[str, Any], *, already_tried: list[str]) -> str:
     lines = [
         f"Company name: {company.get('name')}",
         f"Internal key: {company.get('slug')}",
@@ -106,10 +113,10 @@ def _resolved(
 
 
 async def resolve_one(
-    company: dict,
+    company: dict[str, Any],
     *,
     probe: ProbeFn,
-    llm,  # a tool-calling chat model (ChatOllama / ChatAnthropic); injected for testability
+    llm: BaseChatModel,  # tool-calling chat model (ChatOllama / ChatAnthropic); injected for testability
     max_probes: int = TRACKER_RESOLVE_MAX_PROBES,
 ) -> BoardResolution:
     """Resolve a single company's ATS board. Pure of cache/DB and HTTP setup.
@@ -140,7 +147,7 @@ async def resolve_one(
     #    must hold regardless. range(max_probes) also caps turns, so a degenerate
     #    model that only emits empty/duplicate slugs still terminates.
     llm_with_tools = bind_tools(llm, [ProbeCandidate])
-    messages: list = [
+    messages: list[BaseMessage] = [
         SystemMessage(content=_SYSTEM_PROMPT),
         HumanMessage(content=_describe_company(company, already_tried=attempted)),
     ]
@@ -189,7 +196,7 @@ def _read_cache(slug: str) -> dict | None:  # type: ignore[type-arg]
         return get_cached(slug, conn)
 
 
-def _write_cache(company: dict, resolution: BoardResolution) -> None:
+def _write_cache(company: dict[str, Any], resolution: BoardResolution) -> None:
     """Synchronous cache write. Run via asyncio.to_thread from the async node."""
     if resolution.ats is None or resolution.ats_slug is None:
         return  # `resolved` implies these are set; defensive, and keeps types honest
@@ -207,7 +214,7 @@ def _write_cache(company: dict, resolution: BoardResolution) -> None:
         conn.commit()
 
 
-async def resolve_board(state: TrackerState) -> dict:
+async def resolve_board(state: TrackerState) -> dict[str, Any]:
     """Resolve and cache the ATS board for the company in *state*.
 
     Conditional skip: if the board is already cached in the companies table, return

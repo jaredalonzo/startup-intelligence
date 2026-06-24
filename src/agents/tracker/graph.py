@@ -26,6 +26,7 @@ from typing import Iterator
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from psycopg import Connection
 from psycopg.rows import dict_row
 
@@ -33,7 +34,7 @@ from agents.tracker.state import BoardResolution, DossierInputs, TrackerState, T
 from agents.tracker import dossier, nodes
 
 
-def build_graph() -> StateGraph:
+def build_graph() -> StateGraph[TrackerState]:
     g = StateGraph(TrackerState)
 
     g.add_node("resolve_board", nodes.resolve_board)
@@ -68,7 +69,7 @@ def build_graph() -> StateGraph:
     return g
 
 
-def compile_graph(checkpointer: PostgresSaver | None = None):
+def compile_graph(checkpointer: PostgresSaver | None = None) -> CompiledStateGraph[TrackerState]:
     """Compile the tracker graph, optionally with a Postgres checkpointer."""
     return build_graph().compile(checkpointer=checkpointer)
 

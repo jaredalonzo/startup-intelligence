@@ -27,6 +27,7 @@ dev = [
     "respx>=0.21",
     "ruff>=0.4",
     "mypy>=1.10",
+    "types-PyYAML>=6.0",
 ]
 
 [tool.setuptools]
@@ -47,6 +48,17 @@ line-length = 100
 [tool.mypy]
 python_version = "3.12"
 strict = true
+# src/ is the single source root: modules resolve as `config`, `store.db`, etc.
+# Pin the base explicitly so `mypy src` maps each file to one canonical module
+# name (otherwise it sees e.g. both `db` and `store.db` -> "found twice").
+mypy_path = "src"
+explicit_package_bases = true
+
+# feedparser ships no type stubs or py.typed marker; nothing to gain from
+# checking it. (PyYAML is covered by the types-PyYAML dev dependency.)
+[[tool.mypy.overrides]]
+module = ["feedparser"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

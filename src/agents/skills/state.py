@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated
+from typing import Annotated, Any, TypedDict
 
 from pydantic import BaseModel
 
@@ -51,7 +51,7 @@ class TrendReport(BaseModel):
 # Skills agent state
 # ---------------------------------------------------------------------------
 
-class SkillsState(dict):
+class SkillsState(TypedDict):
     """State for the skills trend agent graph.
 
     new_postings:           postings loaded by load_deltas, awaiting extraction
@@ -62,7 +62,7 @@ class SkillsState(dict):
     radar_digest:           output of synthesize_radar (markdown string)
     watermark:              ISO timestamp; load_deltas reads postings updated after this
     """
-    new_postings: list[dict]
+    new_postings: list[dict[str, Any]]
     extractions: Annotated[list[SkillExtraction], operator.add]
     normalized_extractions: list[SkillExtraction]
     unknown_skills: list[str]

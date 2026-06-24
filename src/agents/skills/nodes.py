@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from itertools import combinations
 from typing import Any
 
+import psycopg
 import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -55,7 +56,7 @@ class _PostingExtraction(BaseModel):
 # Deterministic nodes
 # ---------------------------------------------------------------------------
 
-def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dict:
+def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dict[str, Any]:
     """Load technical job postings updated since the last watermark.
 
     Queries postings by first_seen_at > watermark (not updated_at, which is NULL
@@ -112,7 +113,7 @@ def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dic
     }
 
 
-def extract_skills(state: SkillsState) -> dict:
+def extract_skills(state: SkillsState) -> dict[str, Any]:
     """Fan-out coordinator. Does no work itself — _fan_out_extractions emits Sends."""
     return {}
 
@@ -167,7 +168,7 @@ def _as_extractions(items: list[SkillExtraction]) -> list[SkillExtraction]:
     return [SkillExtraction.model_validate(i) for i in items]
 
 
-def normalize_taxonomy(state: SkillsState) -> dict:
+def normalize_taxonomy(state: SkillsState) -> dict[str, Any]:
     """Apply aliases.yaml to collapse synonyms across all extractions.
 
     Reads state["extractions"] (fan-in output from extract_one).
@@ -203,7 +204,9 @@ def normalize_taxonomy(state: SkillsState) -> dict:
     }
 
 
-def _persist_extractions(extractions: list[SkillExtraction], conn) -> None:  # type: ignore[type-arg]
+def _persist_extractions(
+    extractions: list[SkillExtraction], conn: psycopg.Connection[dict[str, Any]]
+) -> None:
     """Insert normalized extractions into the DB. Append-only by design.
 
     Does not commit — the caller (aggregate_trends) commits the inserts and the
@@ -237,7 +240,9 @@ def _persist_extractions(extractions: list[SkillExtraction], conn) -> None:  # t
         )
 
 
-def _query_prev_counts(conn, window_days: int) -> tuple[Counter[str], Counter[str]]:  # type: ignore[type-arg]
+def _query_prev_counts(
+    conn: psycopg.Connection[dict[str, Any]], window_days: int
+) -> tuple[Counter[str], Counter[str]]:
     """Query skill/platform counts from the previous equal-duration window.
 
     Previous window = [now - 2×window_days, now - window_days].
@@ -267,7 +272,7 @@ def _query_prev_counts(conn, window_days: int) -> tuple[Counter[str], Counter[st
     return skill_counts, platform_counts
 
 
-def aggregate_trends(state: SkillsState) -> dict:
+def aggregate_trends(state: SkillsState) -> dict[str, Any]:
     """Compute frequency deltas, new skills, and co-occurrence from normalized extractions.
 
     Persists the current extractions to the DB first (so future runs have a
@@ -345,7 +350,7 @@ def aggregate_trends(state: SkillsState) -> dict:
     }
 
 
-def route_outputs(state: SkillsState) -> dict:
+def route_outputs(state: SkillsState) -> dict[str, Any]:
     """Write the radar digest to Notion and open/refresh Linear gap tasks.
 
     Gap skills are any skill/platform whose pct_of_postings >= SKILLS_GAP_TASK_THRESHOLD_PCT.
@@ -464,7 +469,7 @@ def _extract_with_retry(posting: dict[str, Any], attempts: int = 2) -> _PostingE
     return _EMPTY_EXTRACTION
 
 
-def extract_one(state: dict) -> dict:
+def extract_one(state: dict[str, Any]) -> dict[str, Any]:
     """Extract skills, platforms, seniority, and comp from a single posting.
 
     Receives {"posting": <postings row dict>} from Send.
@@ -488,7 +493,7 @@ def extract_one(state: dict) -> dict:
     return {"extractions": [extraction]}
 
 
-def synthesize_radar(state: SkillsState) -> dict:
+def synthesize_radar(state: SkillsState) -> dict[str, Any]:
     """Turn the TrendReport into a personalized skills radar digest.
 
     Targets FDE, TAM, CSE, and implementation archetypes. Highlights what's
