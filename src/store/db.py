@@ -8,11 +8,14 @@ LangGraph nodes can each use the appropriate interface.
 import os
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Iterator
 
 import psycopg
 import psycopg.rows
 from psycopg_pool import ConnectionPool, AsyncConnectionPool
+
+_SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 
 def _url() -> str:
@@ -20,6 +23,22 @@ def _url() -> str:
     if not url:
         raise RuntimeError("DATABASE_URL environment variable is not set")
     return url
+
+
+def apply_schema() -> None:
+    """Apply ``schema.sql`` against the database, idempotently.
+
+    schema.sql is written to be safe to re-run (every statement uses
+    IF NOT EXISTS / CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS), so
+    this both creates a fresh database and migrates an existing one to the
+    current schema. Run it before ingestion so new columns/tables land in the
+    live DB without a manual psql step — schema lives in one file, applied in
+    one place.
+    """
+    sql = _SCHEMA_PATH.read_text()
+    with get_connection() as conn:
+        conn.execute(sql)
+        conn.commit()
 
 
 @contextmanager
