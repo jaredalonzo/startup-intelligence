@@ -18,6 +18,8 @@ from typing import Any, Callable, Mapping
 
 from pydantic import BaseModel
 
+from llm_structured import structured
+
 # Cap the JD slice sent to the judge — long postings cost tokens without adding
 # signal, and keeps the judge prompt within a small, predictable budget.
 _MAX_JD_CHARS = 6000
@@ -51,7 +53,7 @@ def judge_extraction(
     judge_llm: Any,
 ) -> ExtractionJudgment:
     """Score one extraction against its JD. `judge_llm` is a LangChain chat model."""
-    chain = judge_llm.with_structured_output(ExtractionJudgment)
+    chain = structured(judge_llm, ExtractionJudgment)
     verdict: ExtractionJudgment = chain.invoke([
         {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
         {"role": "user", "content": _build_user_prompt(jd_text, extraction)},

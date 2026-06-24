@@ -16,5 +16,7 @@ def build_llm(model: str) -> Any:
     if model.startswith("claude"):
         from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(model=model, temperature=0, max_tokens=1024)  # type: ignore[call-arg]
-    from langchain_ollama import ChatOllama
-    return ChatOllama(model=model, temperature=0)
+    # Ollama (local or cloud) — reuse the configured backend so the judge and
+    # bake-off targets pick up Ollama Cloud auth the same way the graphs do.
+    from config import build_ollama
+    return build_ollama(model)

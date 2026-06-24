@@ -29,6 +29,7 @@ from config import (
     SYNTHESIS_LLM,
     TARGET_ROLES,
 )
+from llm_structured import structured
 from outputs.linear import create_gap_tasks
 from outputs.notion import write_skills_digest
 from store.db import get_connection
@@ -393,7 +394,7 @@ def extract_posting_fields(posting: dict[str, Any], llm: Any = None) -> _Posting
         context_parts.append(f"Team: {posting['team']}")
     context_parts.append(f"\n{text}")
 
-    chain = llm.with_structured_output(_PostingExtraction)
+    chain = structured(llm, _PostingExtraction)
     result: _PostingExtraction = chain.invoke([
         SystemMessage(content=_EXTRACTION_SYSTEM_PROMPT),
         HumanMessage(content="\n".join(context_parts)),

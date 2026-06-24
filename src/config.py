@@ -1,19 +1,51 @@
 """Central configuration — model objects, thresholds, and tunables."""
 import os
+from typing import Any
 
-# To switch to Anthropic: swap the two import lines and update the model strings below.
-# from langchain_anthropic import ChatAnthropic
 from langchain_ollama import ChatOllama
+
+# ---------------------------------------------------------------------------
+# Ollama backend — local by default, Ollama Cloud when an API key is present
+# ---------------------------------------------------------------------------
+# To use Ollama Cloud, the only required env var is:
+#   OLLAMA_API_KEY=<key from https://ollama.com/settings/keys>
+# Its presence alone switches the backend to the cloud host below and attaches
+# the auth header. Unset → a local Ollama daemon (http://localhost:11434).
+# OLLAMA_HOST is an optional explicit override (e.g. a self-hosted endpoint).
+# Over the API, cloud model names carry no "-cloud" suffix (e.g. "gpt-oss:120b").
+OLLAMA_CLOUD_HOST = "https://ollama.com"
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST") or (OLLAMA_CLOUD_HOST if OLLAMA_API_KEY else None)
+
+
+def build_ollama(model: str, **overrides: Any) -> ChatOllama:
+    """ChatOllama wired for the configured backend (local or Ollama Cloud).
+
+    Setting OLLAMA_API_KEY alone routes to Ollama Cloud: it selects the cloud
+    host and attaches Bearer auth headers (sync *and* async clients, since the
+    graphs run async). Without a key it behaves exactly like a plain local
+    ChatOllama. Defaults to temperature=0 for deterministic extraction/judging.
+    """
+    kwargs: dict[str, Any] = {"model": model, "temperature": 0}
+    if OLLAMA_HOST:
+        kwargs["base_url"] = OLLAMA_HOST
+    if OLLAMA_API_KEY:
+        headers = {"Authorization": f"Bearer {OLLAMA_API_KEY}"}
+        kwargs["client_kwargs"] = {"headers": headers}
+        kwargs["async_client_kwargs"] = {"headers": headers}
+    kwargs.update(overrides)
+    return ChatOllama(**kwargs)
+
 
 # ---------------------------------------------------------------------------
 # LLM instances — import these in nodes, never instantiate a client there
 # ---------------------------------------------------------------------------
 
 # High-volume extraction node (runs once per posting — cost scales with volume)
-EXTRACTION_LLM = ChatOllama(model="qwen2.5:14b", temperature=0)
+EXTRACTION_LLM = build_ollama(os.getenv("EXTRACTION_MODEL", "qwen2.5:14b"))
 
 # Synthesis nodes (once per run — quality matters more than cost)
-SYNTHESIS_LLM = ChatOllama(model="qwen2.5:14b", temperature=0)
+SYNTHESIS_LLM = build_ollama(os.getenv("SYNTHESIS_MODEL", "qwen2.5:14b"))
 
 # Tracker board resolution (LLM + tool-use; one-time cost per new company) —
 # a once-per-company, quality-over-cost task, so it reuses the synthesis model.

@@ -29,6 +29,7 @@ from agents.tracker.state import BoardResolution, TrackerState
 from config import RESOLVE_LLM, TRACKER_RESOLVE_MAX_PROBES
 from ingestion.ats.models import ATSSource
 from ingestion.watchlist import _BOARD_URL, get_cached, probe_ats, upsert_company
+from llm_structured import bind_tools
 from store.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -138,7 +139,7 @@ async def resolve_one(
     #    model may emit several ProbeCandidate calls in one turn, and the cost cap
     #    must hold regardless. range(max_probes) also caps turns, so a degenerate
     #    model that only emits empty/duplicate slugs still terminates.
-    llm_with_tools = llm.bind_tools([ProbeCandidate])
+    llm_with_tools = bind_tools(llm, [ProbeCandidate])
     messages: list = [
         SystemMessage(content=_SYSTEM_PROMPT),
         HumanMessage(content=_describe_company(company, already_tried=attempted)),
