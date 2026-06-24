@@ -371,14 +371,35 @@ def test_synthesize_radar_passes_through_model_content(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_load_deltas_defaults_watermark_and_returns_rows(monkeypatch):
-    conn = _FakeConn(rows=[{"id": "x"}])
+    row = {"id": "x", "title": "Software Engineer", "department": "Engineering"}
+    conn = _FakeConn(rows=[row])
     _patch_conn(monkeypatch, conn)
 
     out = load_deltas({})
 
-    assert out["new_postings"] == [{"id": "x"}]
+    assert out["new_postings"] == [row]
     wm = datetime.fromisoformat(out["watermark"])
     assert (datetime.now(timezone.utc) - wm).total_seconds() < 5   # advanced to ~now
+
+
+def test_load_deltas_filters_non_technical_by_default(monkeypatch):
+    eng = {"id": "e", "title": "Forward Deployed Engineer", "department": "Eng"}
+    sales = {"id": "s", "title": "Account Executive", "department": "Sales"}
+    _patch_conn(monkeypatch, _FakeConn(rows=[eng, sales]))
+
+    out = load_deltas({})
+
+    assert out["new_postings"] == [eng]   # the GTM role is dropped
+
+
+def test_load_deltas_all_roles_keeps_everything(monkeypatch):
+    eng = {"id": "e", "title": "ML Engineer", "department": "Eng"}
+    sales = {"id": "s", "title": "Account Executive", "department": "Sales"}
+    _patch_conn(monkeypatch, _FakeConn(rows=[eng, sales]))
+
+    out = load_deltas({}, {"configurable": {"all_roles": True}})
+
+    assert out["new_postings"] == [eng, sales]
 
 
 def test_load_deltas_uses_provided_watermark_in_query(monkeypatch):

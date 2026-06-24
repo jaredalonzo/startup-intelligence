@@ -106,6 +106,12 @@ def main() -> None:
         default=None,
         help="Force a specific lookback window in days, ignoring the stored watermark.",
     )
+    parser.add_argument(
+        "--all-roles",
+        action="store_true",
+        help="Extract every posting, skipping the technical-only role filter "
+             "(a deliberate broad analysis; the agent targets FDE/TAM/CSE/eng by default).",
+    )
     args = parser.parse_args()
 
     log.info("Starting skills agent run (thread=%s)", _THREAD_ID)
@@ -127,7 +133,7 @@ def main() -> None:
             # would be rejected (429). The tracker is already a sequential map, so
             # only the skills agent's fan-out needs this guard.
             config={
-                "configurable": {"thread_id": _THREAD_ID},
+                "configurable": {"thread_id": _THREAD_ID, "all_roles": args.all_roles},
                 "callbacks": [guard],
                 "max_concurrency": 1,
             },

@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
@@ -33,6 +34,7 @@ from config import (
 from llm_structured import structured
 from outputs.linear import create_gap_tasks
 from outputs.notion import write_skills_digest
+from roles import is_technical
 from store.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -52,14 +54,17 @@ class _PostingExtraction(BaseModel):
 # Deterministic nodes
 # ---------------------------------------------------------------------------
 
-def load_deltas(state: SkillsState) -> dict:
+def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dict:
     """Load technical job postings updated since the last watermark.
 
     Queries postings by first_seen_at > watermark (not updated_at, which is NULL
-    for Ashby and Workable boards that do not expose a true updatedAt field).
-    Returns new_postings and advances the watermark to NOW().
+    for Ashby and Workable boards that do not expose a true updatedAt field), then
+    keeps only technical roles — the skills radar targets FDE/TAM/CSE/eng, and the
+    corpus is ~half GTM/ops/recruiting noise. Pass configurable ``all_roles=True``
+    to skip the filter (a deliberate broad analysis). Advances the watermark to NOW().
     """
     now = datetime.now(timezone.utc)
+    all_roles = bool((config or {}).get("configurable", {}).get("all_roles", False))
 
     watermark_str = state.get("watermark")
     if watermark_str:
@@ -83,8 +88,17 @@ def load_deltas(state: SkillsState) -> dict:
             {"watermark": watermark},
         ).fetchall()
 
+    if all_roles:
+        new_postings = list(rows)
+    else:
+        new_postings = [r for r in rows if is_technical(r.get("title"), r.get("department"))]
+    logger.info(
+        "load_deltas: %d postings since watermark, %d kept%s",
+        len(rows), len(new_postings), "" if all_roles else " (technical only)",
+    )
+
     return {
-        "new_postings": list(rows),
+        "new_postings": new_postings,
         "watermark": now.isoformat(),
     }
 
