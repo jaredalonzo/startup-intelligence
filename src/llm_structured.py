@@ -17,12 +17,66 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 _ROLE_MAP = {"system": "system", "human": "user", "ai": "assistant",
              "user": "user", "assistant": "assistant", "tool": "tool"}
+
+# Some models wrap the JSON object in a Markdown code fence (```json ... ```)
+# despite a format/schema directive — gemma3 does this. Extract the fenced body.
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Return JSON unwrapped from a Markdown code fence if present, else trimmed."""
+    m = _FENCE_RE.search(text)
+    return m.group(1).strip() if m else text.strip()
+
+
+def _describe_fields(schema: dict[str, Any]) -> str:
+    """Render a schema's fields as a 'name (type), ...' hint for the prompt.
+
+    Used instead of dumping the full JSON Schema — some models echo a verbatim
+    schema back as their answer. Optional fields (anyOf with null) read as their
+    non-null type; unknown shapes fall back to 'any'.
+    """
+    def _type_of(spec: dict[str, Any]) -> str:
+        if "type" in spec:
+            return str(spec["type"])
+        for branch in spec.get("anyOf", []):
+            if isinstance(branch, dict) and branch.get("type") not in (None, "null"):
+                return str(branch["type"])
+        return "any"
+
+    props = schema.get("properties", {})
+    fields = ", ".join(f"{name} ({_type_of(spec)})" for name, spec in props.items())
+    return fields or "the required fields"
+
+
+def _example_object(schema: dict[str, Any]) -> str:
+    """Render a placeholder JSON object showing the required keys and shape.
+
+    Shows the object structure (so models emit a keyed object, not positional
+    values or an echoed schema) without being the JSON Schema itself.
+    """
+    placeholder = {"array": "[]", "string": '"..."', "integer": "0",
+                   "number": "0", "boolean": "true", "object": "{}"}
+
+    def _type_of(spec: dict[str, Any]) -> str:
+        if "type" in spec:
+            return str(spec["type"])
+        for branch in spec.get("anyOf", []):
+            if isinstance(branch, dict) and branch.get("type") not in (None, "null"):
+                return str(branch["type"])
+        return "any"
+
+    props = schema.get("properties", {})
+    parts = [f'"{name}": {placeholder.get(_type_of(spec), "null")}'
+             for name, spec in props.items()]
+    return "{" + ", ".join(parts) + "}"
 
 
 def _is_chat_ollama(llm: Any) -> bool:
@@ -86,18 +140,61 @@ class _OllamaStructured:
         # gpt-oss (and other reasoning models) treat ``format`` as best-effort and
         # otherwise emit prose/markdown, so pair it with an explicit JSON-only
         # directive placed just before the final turn — the combination reliably
-        # yields a parseable object.
+        # yields a parseable object. Describe the fields by name/type rather than
+        # dumping the JSON Schema: handed the schema object verbatim, some models
+        # (gemma3) echo it back instead of producing an instance.
         directive = {
             "role": "system",
-            "content": "Respond with ONLY a single JSON object matching this schema. "
-                       "No prose, no markdown:\n" + json.dumps(schema),
+            "content": "Output ONLY a single JSON object — no prose, no markdown, no "
+                       "code fences. Keys and types: " + _describe_fields(schema)
+                       + ". Return one object with exactly these keys and real values, "
+                         "not positional values and not this template: "
+                       + _example_object(schema)
+                       + ". Emit valid JSON — escape any double-quote (\\\") or newline "
+                         "inside string values.",
         }
         msgs = _to_ollama_messages(messages)
         msgs.insert(max(len(msgs) - 1, 0), directive)
         resp = self._client.chat(
             model=self._model, messages=msgs, format=schema, options=self._options,
         )
-        return self._schema.model_validate_json(resp["message"]["content"])
+        return self._parse(resp["message"]["content"])
+
+    def _parse(self, content: str) -> BaseModel:
+        """Validate model output into the schema, tolerating common deviations.
+
+        Handles raw JSON, Markdown-fenced JSON (gemma3), trailing characters after
+        the object, and an instance nested one level inside an envelope object.
+        Genuinely non-conforming output (e.g. a model echoing the JSON schema)
+        still raises, so the caller's retry/degrade path engages.
+        """
+        text = _strip_code_fences(content)
+        try:
+            return self._schema.model_validate_json(text)
+        except (ValidationError, ValueError):
+            pass
+        # Decode just the first JSON value, tolerating trailing characters (extra
+        # prose, a second object, positional leftovers) after a complete object.
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(text.lstrip())
+        except ValueError:
+            try:
+                obj = json.loads(text)
+            except ValueError:
+                return self._schema.model_validate_json(text)  # re-raise informative error
+        try:
+            return self._schema.model_validate(obj)
+        except ValidationError:
+            pass
+        if isinstance(obj, dict):
+            wrappers = [obj[k] for k in ("properties", "data", "result", "output", "value")
+                        if isinstance(obj.get(k), dict)]
+            for candidate in wrappers + [v for v in obj.values() if isinstance(v, dict)]:
+                try:
+                    return self._schema.model_validate(candidate)
+                except ValidationError:
+                    continue
+        return self._schema.model_validate(obj)  # raise a clear validation error
 
 
 def structured(llm: Any, schema: type[BaseModel]) -> Any:
