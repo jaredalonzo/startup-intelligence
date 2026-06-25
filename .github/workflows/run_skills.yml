@@ -12,12 +12,16 @@ name: Run skills agent
 on:
   workflow_dispatch:
     inputs:
+      window_days:
+        description: "Lookback window in days (overrides the stored watermark)"
+        type: string
+        default: "1"
       all_roles:
         description: "Extract all roles (skip the technical-only filter)"
         type: boolean
         default: false
   schedule:
-    - cron: "0 10 * * 1"   # weekly, Mon 10:00 UTC (after the daily tracker run)
+    - cron: "0 10 * * *"   # daily 10:00 UTC (after the 09:00 tracker run)
 
 jobs:
   run-skills:
@@ -46,6 +50,8 @@ jobs:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           EXTRACTION_MODEL: gpt-oss:20b
           SYNTHESIS_MODEL: gpt-oss:120b
-        # inputs.all_roles is set only on manual dispatch; scheduled runs omit the
-        # flag and keep the default technical-only filter.
-        run: python scripts/run_skills.py ${{ inputs.all_roles && '--all-roles' || '' }}
+        # inputs.* are set only on manual dispatch; scheduled runs omit them, so
+        # window_days falls back to 1 (a one-day lookback) and the technical-only
+        # filter stays on. A small daily window keeps each run well under the
+        # job timeout instead of re-processing a week of postings at once.
+        run: python scripts/run_skills.py --window-days ${{ inputs.window_days || '1' }} ${{ inputs.all_roles && '--all-roles' || '' }}
