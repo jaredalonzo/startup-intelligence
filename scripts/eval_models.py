@@ -38,7 +38,7 @@ load_dotenv()
 from langsmith import Client, evaluate
 
 from agents.skills.nodes import extract_posting_fields
-from config import EVAL_JUDGE_MODEL
+from config import EVAL_JUDGE_MODEL, OLLAMA_API_KEY
 from eval.extraction_quality import make_offline_evaluator
 from eval.llm import build_llm
 from roles import is_technical
@@ -180,6 +180,38 @@ def make_target(model: str, cloud: bool | None = None):
     return target
 
 
+def _effective_backend(model: str, choice: str) -> str:
+    """Resolve a backend choice to what actually runs, for the experiment name.
+
+    'auto' resolves to 'cloud' iff OLLAMA_API_KEY is set, else 'local' — mirroring
+    build_ollama — so the name reflects the real backend, never the literal 'auto'.
+    claude-* models always go to Anthropic regardless of the Ollama backend.
+    """
+    if model.startswith("claude"):
+        return "anthropic"
+    cloud_flag = _BACKEND[choice]
+    use_cloud = (OLLAMA_API_KEY is not None) if cloud_flag is None else cloud_flag
+    return "cloud" if use_cloud else "local"
+
+
+def experiment_prefix(model: str, judge_model: str, candidate_backend: str,
+                      judge_backend: str, label: str | None) -> str:
+    """Descriptive LangSmith experiment name labeling each model and its backend.
+
+      skills-extract=candidate[<model>]--<backend>|judge[<judge_model>]--<backend>
+
+    Spelling out which model is candidate vs judge — and where each runs — keeps
+    runs of the same candidate under different judges/backends distinguishable
+    (LangSmith still appends its own random suffix).
+    """
+    cand = f"candidate[{model}]--{_effective_backend(model, candidate_backend)}"
+    judge = f"judge[{judge_model}]--{_effective_backend(judge_model, judge_backend)}"
+    name = f"skills-extract={cand}|{judge}"
+    if label:
+        name += f"|{label}"
+    return name
+
+
 # The LLM-as-judge for extraction quality lives in eval.extraction_quality so it
 # is shared with the online evaluator (scripts/online_eval.py). Latency and token
 # usage are captured automatically by LangSmith per example.
@@ -200,6 +232,9 @@ def main() -> None:
     parser.add_argument("--judge-backend", choices=("auto", "local", "cloud"), default="auto",
                         help="Ollama backend for the judge model — e.g. 'cloud' to judge local "
                              "candidates with a cloud-only model like gpt-oss:120b.")
+    parser.add_argument("--label", default=None,
+                        help="Optional free-form tag appended to the experiment name "
+                             "(e.g. 'baseline', 'promptv2') for easy identification in LangSmith.")
     args = parser.parse_args()
 
     if not os.environ.get("LANGSMITH_API_KEY"):
@@ -222,10 +257,12 @@ def main() -> None:
             make_target(model, cloud=candidate_cloud),
             data=_DATASET,
             evaluators=[judge],
-            experiment_prefix=f"skills-extract-{model}",
+            experiment_prefix=experiment_prefix(
+                model, args.judge_model, args.candidate_backend, args.judge_backend, args.label,
+            ),
             metadata={"model": model, "judge_model": args.judge_model,
                       "candidate_backend": args.candidate_backend,
-                      "judge_backend": args.judge_backend},
+                      "judge_backend": args.judge_backend, "label": args.label},
             max_concurrency=1,
         )
         log.info("Done: %s", getattr(results, "experiment_name", model))
