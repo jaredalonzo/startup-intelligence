@@ -18,21 +18,32 @@ OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST") or (OLLAMA_CLOUD_HOST if OLLAMA_API_KEY else None)
 
 
-def build_ollama(model: str, **overrides: Any) -> ChatOllama:
+def build_ollama(model: str, *, cloud: bool | None = None, **overrides: Any) -> ChatOllama:
     """ChatOllama wired for the configured backend (local or Ollama Cloud).
 
-    Setting OLLAMA_API_KEY alone routes to Ollama Cloud: it selects the cloud
-    host and attaches Bearer auth headers (sync *and* async clients, since the
-    graphs run async). Without a key it behaves exactly like a plain local
-    ChatOllama. Defaults to temperature=0 for deterministic extraction/judging.
+    Backend selection:
+      - ``cloud=None`` (default): use Ollama Cloud iff OLLAMA_API_KEY is set —
+        the global default EXTRACTION_LLM / SYNTHESIS_LLM rely on.
+      - ``cloud=True``:  force Ollama Cloud (cloud host + Bearer auth; needs a key).
+      - ``cloud=False``: force a local daemon (http://localhost:11434), ignoring
+        the key.
+
+    The per-model override lets one process mix backends — e.g. local candidate
+    models judged by a cloud model in the bake-off. Defaults to temperature=0 for
+    deterministic extraction/judging.
     """
+    use_cloud = (OLLAMA_API_KEY is not None) if cloud is None else cloud
     kwargs: dict[str, Any] = {"model": model, "temperature": 0}
-    if OLLAMA_HOST:
+    if use_cloud:
+        kwargs["base_url"] = OLLAMA_HOST or OLLAMA_CLOUD_HOST
+        if OLLAMA_API_KEY:
+            headers = {"Authorization": f"Bearer {OLLAMA_API_KEY}"}
+            kwargs["client_kwargs"] = {"headers": headers}
+            kwargs["async_client_kwargs"] = {"headers": headers}
+    elif OLLAMA_HOST and OLLAMA_HOST != OLLAMA_CLOUD_HOST:
+        # An explicit non-cloud OLLAMA_HOST (e.g. a self-hosted box); otherwise
+        # ChatOllama defaults to http://localhost:11434.
         kwargs["base_url"] = OLLAMA_HOST
-    if OLLAMA_API_KEY:
-        headers = {"Authorization": f"Bearer {OLLAMA_API_KEY}"}
-        kwargs["client_kwargs"] = {"headers": headers}
-        kwargs["async_client_kwargs"] = {"headers": headers}
     kwargs.update(overrides)
     return ChatOllama(**kwargs)
 

@@ -167,9 +167,12 @@ def build_dataset(sample: int) -> None:
 # Target — the production extraction, parametrized by model
 # ---------------------------------------------------------------------------
 
-def make_target(model: str):
+_BACKEND = {"auto": None, "local": False, "cloud": True}  # CLI choice → build_llm cloud flag
+
+
+def make_target(model: str, cloud: bool | None = None):
     """Return a LangSmith target fn that runs the real extraction with `model`."""
-    llm = build_llm(model)
+    llm = build_llm(model, cloud=cloud)
 
     def target(inputs: dict[str, Any]) -> dict[str, Any]:
         return extract_posting_fields(inputs, llm).model_dump()
@@ -192,6 +195,11 @@ def main() -> None:
                         help="Candidate models to compare (one Experiment each).")
     parser.add_argument("--judge-model", default=EVAL_JUDGE_MODEL,
                         help="Model used as the quality judge (a stronger model is recommended).")
+    parser.add_argument("--candidate-backend", choices=("auto", "local", "cloud"), default="auto",
+                        help="Ollama backend for the candidate models (default: auto = key presence).")
+    parser.add_argument("--judge-backend", choices=("auto", "local", "cloud"), default="auto",
+                        help="Ollama backend for the judge model — e.g. 'cloud' to judge local "
+                             "candidates with a cloud-only model like gpt-oss:120b.")
     args = parser.parse_args()
 
     if not os.environ.get("LANGSMITH_API_KEY"):
@@ -202,17 +210,22 @@ def main() -> None:
         build_dataset(args.sample)
         return
 
-    judge = make_offline_evaluator(build_llm(args.judge_model))
+    candidate_cloud = _BACKEND[args.candidate_backend]
+    judge_cloud = _BACKEND[args.judge_backend]
+    judge = make_offline_evaluator(build_llm(args.judge_model, cloud=judge_cloud))
     for model in args.models:
-        log.info("Evaluating model %r (judge=%r)…", model, args.judge_model)
+        log.info("Evaluating model %r [%s] (judge=%r [%s])…",
+                 model, args.candidate_backend, args.judge_model, args.judge_backend)
         # max_concurrency=1: serialize calls so a queued local model (OLLAMA_NUM_PARALLEL=1)
         # doesn't inflate per-example latency — keeps the latency comparison fair.
         results = evaluate(
-            make_target(model),
+            make_target(model, cloud=candidate_cloud),
             data=_DATASET,
             evaluators=[judge],
             experiment_prefix=f"skills-extract-{model}",
-            metadata={"model": model, "judge_model": args.judge_model},
+            metadata={"model": model, "judge_model": args.judge_model,
+                      "candidate_backend": args.candidate_backend,
+                      "judge_backend": args.judge_backend},
             max_concurrency=1,
         )
         log.info("Done: %s", getattr(results, "experiment_name", model))
