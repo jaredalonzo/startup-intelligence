@@ -20,36 +20,141 @@ def _headers() -> dict[str, str]:
     }
 
 
+_TEXT_LIMIT = 2000  # Notion rejects a single rich_text content longer than this.
+
+# Inline spans, tried in this order so `***x***` beats `**x**` beats `*x*`.
+# Only `*` is treated as emphasis — `_` is left alone so snake_case identifiers
+# (updated_at, score_trending, ...) survive untouched.
+_INLINE_RE = re.compile(
+    r"\*\*\*(?P<bi>.+?)\*\*\*"
+    r"|\*\*(?P<b>.+?)\*\*"
+    r"|(?<!\*)\*(?!\*)(?P<i>[^*]+?)\*(?!\*)"
+    r"|`(?P<c>[^`]+?)`"
+    r"|\[(?P<lt>[^\]]+?)\]\((?P<lh>[^)]+?)\)"
+)
+
+
+def _segment(content: str, *, bold: bool = False, italic: bool = False,
+             code: bool = False, href: str | None = None) -> Iterator[dict]:  # type: ignore[type-arg]
+    """Yield Notion text segment(s), splitting on the 2000-char content limit."""
+    annotations: dict[str, bool] = {}
+    if bold:
+        annotations["bold"] = True
+    if italic:
+        annotations["italic"] = True
+    if code:
+        annotations["code"] = True
+    for i in range(0, len(content), _TEXT_LIMIT):
+        chunk = content[i:i + _TEXT_LIMIT]
+        text: dict[str, Any] = {"content": chunk}
+        if href:
+            text["link"] = {"url": href}
+        seg: dict[str, Any] = {"type": "text", "text": text}
+        if annotations:
+            seg["annotations"] = dict(annotations)
+        yield seg
+
+
 def _rich_text(content: str) -> list[dict]:  # type: ignore[type-arg]
-    """Strip **bold** markers and return a Notion rich_text array."""
-    plain = re.sub(r"\*\*(.+?)\*\*", r"\1", content)
-    return [{"type": "text", "text": {"content": plain}}]
+    """Parse inline markdown (bold/italic/code/links) into a Notion rich_text array."""
+    segments: list[dict] = []  # type: ignore[type-arg]
+    pos = 0
+    for m in _INLINE_RE.finditer(content):
+        if m.start() > pos:
+            segments.extend(_segment(content[pos:m.start()]))
+        if m.group("bi") is not None:
+            segments.extend(_segment(m.group("bi"), bold=True, italic=True))
+        elif m.group("b") is not None:
+            segments.extend(_segment(m.group("b"), bold=True))
+        elif m.group("i") is not None:
+            segments.extend(_segment(m.group("i"), italic=True))
+        elif m.group("c") is not None:
+            segments.extend(_segment(m.group("c"), code=True))
+        else:  # link
+            segments.extend(_segment(m.group("lt"), href=m.group("lh")))
+        pos = m.end()
+    if pos < len(content):
+        segments.extend(_segment(content[pos:]))
+    return segments or list(_segment(content))
+
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+_NUMBER_RE = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
+_QUOTE_RE = re.compile(r"^>\s?(.*)$")
+_DIVIDER_RE = re.compile(r"^(-{3,}|\*{3,}|_{3,})$")
+
+
+def _leaf(block_type: str, text: str) -> dict:  # type: ignore[type-arg]
+    return {"object": "block", "type": block_type,
+            block_type: {"rich_text": _rich_text(text)}}
 
 
 def _markdown_to_blocks(text: str) -> list[dict]:  # type: ignore[type-arg]
-    """Convert the digest markdown (## headings + bullet lists) to Notion blocks."""
-    blocks: list[dict] = []  # type: ignore[type-arg]
-    for line in text.splitlines():
-        line = line.rstrip()
-        if line.startswith("## "):
-            blocks.append({
-                "object": "block",
-                "type": "heading_2",
-                "heading_2": {"rich_text": _rich_text(line[3:])},
-            })
-        elif line.startswith(("- ", "* ")):
-            blocks.append({
-                "object": "block",
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {"rich_text": _rich_text(line[2:])},
-            })
-        elif line:
-            blocks.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {"rich_text": _rich_text(line)},
-            })
-    return blocks
+    """Convert digest/dossier markdown to Notion blocks.
+
+    Handles headings (#–######, clamped to Notion's three levels), ordered and
+    unordered lists with indentation-based nesting, block quotes, horizontal
+    rules, and paragraphs. Inline bold/italic/code/links are rendered via
+    _rich_text rather than left as literal markup.
+    """
+    root: list[dict] = []  # type: ignore[type-arg]
+    # Stack of (indent, list_item_block) for nesting child list items.
+    stack: list[tuple[int, dict]] = []  # type: ignore[type-arg]
+
+    def append_list_item(indent: int, block: dict) -> None:  # type: ignore[type-arg]
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        if stack:
+            parent = stack[-1][1]
+            parent[parent["type"]].setdefault("children", []).append(block)
+        else:
+            root.append(block)
+        stack.append((indent, block))
+
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+
+        stripped = line.strip()
+        if _DIVIDER_RE.match(stripped):
+            root.append({"object": "block", "type": "divider", "divider": {}})
+            stack.clear()
+            continue
+
+        # Some models wrap the whole heading line in bold (`**## Heating Up**`);
+        # unwrap a full-line bold span before testing so it still becomes a heading.
+        heading_line = line
+        wrapped = re.match(r"^\*\*(.+)\*\*$", stripped)
+        if wrapped and _HEADING_RE.match(wrapped.group(1)):
+            heading_line = wrapped.group(1)
+        heading = _HEADING_RE.match(heading_line)
+        if heading:
+            level = min(len(heading.group(1)), 3)
+            root.append(_leaf(f"heading_{level}", heading.group(2)))
+            stack.clear()
+            continue
+
+        bullet = _BULLET_RE.match(line)
+        number = None if bullet else _NUMBER_RE.match(line)
+        if bullet or number:
+            match = bullet or number
+            assert match is not None
+            indent = len(match.group(1).replace("\t", "  "))
+            block_type = "bulleted_list_item" if bullet else "numbered_list_item"
+            append_list_item(indent, _leaf(block_type, match.group(2)))
+            continue
+
+        quote = _QUOTE_RE.match(line)
+        if quote:
+            root.append(_leaf("quote", quote.group(1)))
+            stack.clear()
+            continue
+
+        root.append(_leaf("paragraph", stripped))
+        stack.clear()
+    return root
 
 
 def write_skills_digest(digest: str, run_date: date | None = None) -> str:

@@ -7,9 +7,52 @@ from __future__ import annotations
 
 import pytest
 
-from outputs.notion import upsert_company_dossier
+from outputs.notion import _markdown_to_blocks, _rich_text, upsert_company_dossier
 
 _PARENT = "PARENT"
+
+
+def _texts(block):
+    t = block["type"]
+    return "".join(seg["text"]["content"] for seg in block[t]["rich_text"])
+
+
+def test_inline_markdown_becomes_annotations_not_literal_markup():
+    segs = _rich_text("Hiring **up 40%** on `Rust` and *fast*, see [board](https://x.io)")
+    # No literal markup leaks into the rendered content.
+    assert "**" not in "".join(s["text"]["content"] for s in segs)
+    by_text = {s["text"]["content"]: s for s in segs}
+    assert by_text["up 40%"]["annotations"] == {"bold": True}
+    assert by_text["Rust"]["annotations"] == {"code": True}
+    assert by_text["fast"]["annotations"] == {"italic": True}
+    assert by_text["board"]["text"]["link"] == {"url": "https://x.io"}
+
+
+def test_snake_case_identifiers_are_not_italicized():
+    [seg] = _rich_text("updated_at drives score_trending")
+    assert seg["text"]["content"] == "updated_at drives score_trending"
+    assert "annotations" not in seg
+
+
+def test_bold_wrapped_heading_is_recognized():
+    [block] = _markdown_to_blocks("**## Heating Up**")
+    assert block["type"] == "heading_2"
+    assert _texts(block) == "Heating Up"
+
+
+def test_headings_lists_and_rules_map_to_block_types():
+    md = "# T\n### Detail\n- top\n  - nested\n1. one\n> quote\n---\nplain"
+    blocks = _markdown_to_blocks(md)
+    types = [b["type"] for b in blocks]
+    assert types == [
+        "heading_1", "heading_3", "bulleted_list_item",
+        "numbered_list_item", "quote", "divider", "paragraph",
+    ]
+    # The indented bullet nests under its parent rather than leaking as text.
+    parent = blocks[2]
+    [child] = parent["bulleted_list_item"]["children"]
+    assert child["type"] == "bulleted_list_item"
+    assert _texts(child) == "nested"
 
 
 class _Resp:
