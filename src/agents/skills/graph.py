@@ -89,7 +89,13 @@ def make_checkpointer() -> Iterator[PostgresSaver]:
         allowed_msgpack_modules=[SkillExtraction, SkillTrend, TrendReport],
     )
     db_url = os.environ["DATABASE_URL"]
+    # The checkpointer holds one connection open for the whole run, but the graph
+    # is mostly idle on it — blocked on slow LLM calls between super-steps. A
+    # serverless Postgres (Neon) proxy reaps that idle socket, so the final
+    # put_writes dies with "SSL connection has been closed unexpectedly". TCP
+    # keepalives keep the connection warm across those multi-minute idle gaps.
     with Connection.connect(
-        db_url, autocommit=True, prepare_threshold=0, row_factory=dict_row
+        db_url, autocommit=True, prepare_threshold=0, row_factory=dict_row,
+        keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
     ) as conn:
         yield PostgresSaver(conn, serde=serde)
