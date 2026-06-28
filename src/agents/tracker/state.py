@@ -89,11 +89,11 @@ class DossierInputs(BaseModel):
 # ---------------------------------------------------------------------------
 
 class TrendScore(BaseModel):
-    """Composite momentum score plus the LLM's qualitative judgment.
+    """Composite momentum score and its deterministic classification.
 
-    `composite` is a deterministic weighted blend of the normalized deltas;
-    `classification` / `rationale` are the LLM judgment flag. `is_top_mover`
-    gates whether a Linear task is created for the company.
+    `composite` is a weighted blend of the normalized window deltas; `classification`
+    is the band it falls in and `rationale` is a sentence assembled from the same
+    deltas (no LLM). `is_top_mover` gates whether a Linear task is created.
     """
     composite: float
     classification: Literal["accelerating", "steady", "cooling"]

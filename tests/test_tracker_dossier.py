@@ -20,7 +20,6 @@ from agents.tracker.dossier import (
     score_trending,
     synthesize_dossier,
     write_dossier,
-    _TrendRationale,
 )
 from agents.tracker.state import DossierInputs, TrendScore
 
@@ -170,6 +169,31 @@ def test_load_signals_empty_store_is_not_meaningful(monkeypatch):
     assert out["signals"].snapshots_available == 0
 
 
+def test_load_signals_window_accelerating_but_flat_this_run_is_meaningful(monkeypatch):
+    # Regression (T1): a company can be unchanged run-over-run yet strongly accelerating
+    # over the snapshot window. The composite is window-based and would flag it a top
+    # mover, so the gate must NOT skip it just because nothing moved since the last run.
+    conn = _DispatchConn(
+        snapshots=[
+            # latest == previous (flat run-over-run), but the window base is far lower
+            {"snapshot_at": _dt(23), "posting_count": 60, "eng_count": 40,
+             "new_ids": [], "removed_ids": []},
+            {"snapshot_at": _dt(22), "posting_count": 60, "eng_count": 40,
+             "new_ids": [], "removed_ids": []},
+            {"snapshot_at": _dt(10), "posting_count": 20, "eng_count": 10,
+             "new_ids": [], "removed_ids": []},
+        ],
+        postings=[{"title": "Backend Eng", "department": "Eng", "seniority": "senior"}],
+    )
+    _patch_conn(monkeypatch, conn)
+
+    out = load_signals({"company": _company()})
+    s = out["signals"]
+    assert s.posting_count_delta == 0 and s.eng_count_delta == 0    # flat run-over-run
+    assert s.eng_count_window_delta == 30                           # but +30 over window
+    assert out["meaningful_change"] is True                         # not skipped
+
+
 # ---------------------------------------------------------------------------
 # route_after_signals
 # ---------------------------------------------------------------------------
@@ -221,7 +245,7 @@ def test_synthesize_dossier_builds_prompt_from_signals(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# score_trending — deterministic composite + LLM judgment flag
+# score_trending — fully deterministic composite, classification + rationale
 # ---------------------------------------------------------------------------
 
 def test_growth_rate_and_edges():
@@ -248,41 +272,31 @@ def test_classify_bands():
     assert _classify(-10.0) == ("cooling", False)
 
 
-class _FakeChain:
-    def __init__(self, result):
-        self._result = result
+class _ExplodingLLM:
+    """Guard: score_trending must make no LLM call, so any use here fails loudly."""
 
-    def invoke(self, messages):
-        return self._result
+    def invoke(self, *a, **k):
+        raise AssertionError("score_trending must not call the LLM")
 
-
-class _FakeRationaleLLM:
-    def __init__(self, result):
-        self._result = result
-
-    def with_structured_output(self, schema):
-        assert schema is _TrendRationale
-        return _FakeChain(self._result)
+    def with_structured_output(self, *a, **k):
+        raise AssertionError("score_trending must not call the LLM")
 
 
-def test_score_trending_classifies_deterministically_with_llm_rationale(monkeypatch):
-    # The LLM only supplies the rationale; classification/top_mover are deterministic,
-    # so the label can never contradict the score (the live-run bug this fixes).
-    monkeypatch.setattr(dossier, "SYNTHESIS_LLM",
-                        _FakeRationaleLLM(_TrendRationale(rationale="hiring + release surge")))
+def test_score_trending_is_fully_deterministic(monkeypatch):
+    # No LLM: composite, classification, top_mover, and the rationale are all derived
+    # from the deltas. The generated rationale can't contradict the score, and a provider
+    # hiccup can no longer discard the already-synthesized dossier (the prior bug).
+    monkeypatch.setattr(dossier, "SYNTHESIS_LLM", _ExplodingLLM())  # must never be used
 
     score: TrendScore = score_trending({"signals": _signals()})["trend_score"]
 
     assert score.composite == 71.39
     assert score.classification == "accelerating"        # 71.39 >= ACCEL band (40.0)
     assert score.is_top_mover is True
-    assert score.rationale == "hiring + release surge"
+    assert "accelerating" in score.rationale and "Anthropic" in score.rationale
 
 
-def test_score_trending_quiet_company_is_steady(monkeypatch):
-    monkeypatch.setattr(dossier, "SYNTHESIS_LLM",
-                        _FakeRationaleLLM(_TrendRationale(rationale="quiet")))
-
+def test_score_trending_quiet_company_is_steady():
     quiet = _signals(eng_count_window_delta=0, posting_count_window_delta=1,
                      new_release_count=0, new_blog_count=0, star_delta_by_repo=[])
     score = score_trending({"signals": quiet})["trend_score"]

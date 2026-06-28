@@ -5,7 +5,7 @@ Pipeline after a board resolves:
   load_signals (det, reads the store)
     → branch: meaningful change? → END if not (cost saver)
     → synthesize_dossier (LLM)   — narrative across the five metrics
-    → score_trending (det composite + LLM judgment flag)
+    → score_trending (det composite, classification + rationale — no LLM)
     → write_dossier (det)        — upsert Notion page; flag top movers for Linear
 
 Per the repo's "agent reads the store; ingestion writes the store" guardrail,
@@ -25,7 +25,6 @@ from datetime import datetime
 from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel
 
 from agents.tracker.state import DossierInputs, TrackerState, TrendScore
 from config import (
@@ -37,7 +36,6 @@ from config import (
     TRACKER_SCORE_CAPS,
     TRACKER_SCORE_WEIGHTS,
 )
-from llm_structured import structured
 from outputs.linear import create_top_mover_task
 from outputs.notion import upsert_company_dossier
 from store.db import get_connection
@@ -196,12 +194,22 @@ def load_signals(state: TrackerState) -> dict[str, Any]:
     # A newly-tracked company (no prior snapshot to diff) still warrants an
     # initial dossier the first time we have any data for it.
     first_dossier = signals.snapshots_available <= 1 and signals.posting_count is not None
-    meaningful_change = has_delta or first_dossier
+    # The gate must agree with the score. A company can be flat run-over-run yet be
+    # strongly accelerating/cooling over the snapshot window, because the composite is
+    # built from *window* deltas — gating only on run-over-run change silently skipped
+    # those movers, so they were never scored, written, or flagged. Also synthesize
+    # whenever the same deterministic composite that decides top-mover puts the company
+    # off "steady".
+    composite = _composite(signals)
+    classification, _ = _classify(composite)
+    notable_mover = classification != "steady"
+    meaningful_change = has_delta or first_dossier or notable_mover
 
     logger.info(
-        "load_signals: %s — meaningful_change=%s (postings Δ%s, eng Δ%s, +%d/-%d roles, "
-        "%d new releases, %d new posts)",
-        slug, meaningful_change, signals.posting_count_delta, signals.eng_count_delta,
+        "load_signals: %s — meaningful_change=%s (composite=%.1f %s, postings Δ%s, eng Δ%s, "
+        "+%d/-%d roles, %d new releases, %d new posts)",
+        slug, meaningful_change, composite, classification,
+        signals.posting_count_delta, signals.eng_count_delta,
         signals.new_postings, signals.removed_postings, new_release_count, new_blog_count,
     )
 
@@ -307,13 +315,8 @@ def synthesize_dossier(state: TrackerState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# score_trending (deterministic composite + classification; LLM rationale only)
+# score_trending (fully deterministic: composite + classification + rationale)
 # ---------------------------------------------------------------------------
-
-class _TrendRationale(BaseModel):
-    """The LLM's one-sentence explanation of the (deterministic) classification."""
-    rationale: str
-
 
 def _growth(curr: int | None, window_delta: int | None) -> float:
     """Window growth rate: delta / base, where base is the value at window start.
@@ -377,9 +380,44 @@ def _classify(composite: float) -> tuple[Literal["accelerating", "steady", "cool
     return "steady", False
 
 
+def _rationale(classification: str, composite: float, s: DossierInputs) -> str:
+    """One-sentence explanation of the classification, assembled from the deltas.
+
+    Deterministic by design: built from the same numbers that produced the composite,
+    so it cannot disagree with the score and needs no LLM. Leads with the hiring window
+    deltas (what the score actually weights), then appends product/community activity.
+    """
+    parts: list[str] = []
+    if s.eng_count_window_delta is not None:
+        parts.append(
+            f"engineering postings {s.eng_count_window_delta:+d} over the window "
+            f"(now {s.eng_count})"
+        )
+    if s.posting_count_window_delta is not None:
+        parts.append(f"total postings {s.posting_count_window_delta:+d}")
+    star_growth = sum(d for _, d in s.star_delta_by_repo)
+    activity: list[str] = []
+    if s.new_release_count:
+        activity.append(f"{s.new_release_count} new release"
+                        f"{'s' if s.new_release_count != 1 else ''}")
+    if s.new_blog_count:
+        activity.append(f"{s.new_blog_count} new post"
+                        f"{'s' if s.new_blog_count != 1 else ''}")
+    if star_growth:
+        activity.append(f"{star_growth:+d} GitHub stars")
+    if activity:
+        parts.append(", ".join(activity))
+    detail = "; ".join(parts) if parts else "no material movement in the tracked signals"
+    return f"{s.company_name} is {classification} (composite {composite:.0f}): {detail}."
+
+
 def score_trending(state: TrackerState) -> dict[str, Any]:
-    """Composite momentum score + classification (both deterministic); the LLM
-    only writes the rationale prose, so it cannot disagree with the score.
+    """Composite momentum score, classification, and rationale — all deterministic.
+
+    The composite and band come from the window deltas; the rationale is a sentence
+    assembled from those same numbers rather than an LLM call. A generated sentence
+    can't contradict the score, costs no serialized LLM round-trip, and — unlike the
+    prior unguarded LLM call — can't fail and discard the already-synthesized dossier.
     """
     signals = state.get("signals")
     if signals is None:
@@ -388,30 +426,10 @@ def score_trending(state: TrackerState) -> dict[str, Any]:
     composite = _composite(signals)
     classification, is_top_mover = _classify(composite)
 
-    explain = structured(SYNTHESIS_LLM, _TrendRationale)
-    out: _TrendRationale = explain.invoke([
-        SystemMessage(content=(
-            "A startup's momentum has already been classified as accelerating, steady, or "
-            "cooling from its hiring and engineering-activity deltas. In one sentence, explain "
-            "why that label fits, citing the deltas. Do not contradict the given classification."
-        )),
-        HumanMessage(content=(
-            f"Company: {signals.company_name}\n"
-            f"Classification: {classification} (composite score {composite:.1f})\n"
-            f"Eng postings — run-over-run: {signals.eng_count_delta}, "
-            f"over window: {signals.eng_count_window_delta}\n"
-            f"Total postings — run-over-run: {signals.posting_count_delta}, "
-            f"over window: {signals.posting_count_window_delta}\n"
-            f"Roles opened/closed this run: {signals.new_postings}/{signals.removed_postings}\n"
-            f"New releases: {signals.new_release_count}; new blog posts: {signals.new_blog_count}\n"
-            f"Star deltas: {signals.star_delta_by_repo}"
-        )),
-    ])
-
     score = TrendScore(
         composite=composite,
         classification=classification,
-        rationale=out.rationale,
+        rationale=_rationale(classification, composite, signals),
         is_top_mover=is_top_mover,
     )
     logger.info(
