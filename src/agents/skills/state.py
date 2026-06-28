@@ -56,6 +56,8 @@ class SkillsState(TypedDict):
 
     new_postings:           postings loaded by load_deltas, awaiting extraction
     extractions:            fan-in accumulator; operator.add merges lists from Send nodes
+    n_failed:               fan-in count of postings that failed extraction after retries;
+                            aggregate_trends holds the watermark when this is > 0
     normalized_extractions: extractions after synonym collapse (output of normalize_taxonomy)
     unknown_skills:         skills not found in aliases.yaml; flagged for taxonomy review
     trend_report:           output of aggregate_trends
@@ -64,6 +66,7 @@ class SkillsState(TypedDict):
     """
     new_postings: list[dict[str, Any]]
     extractions: Annotated[list[SkillExtraction], operator.add]
+    n_failed: Annotated[int, operator.add]
     normalized_extractions: list[SkillExtraction]
     unknown_skills: list[str]
     trend_report: TrendReport | None

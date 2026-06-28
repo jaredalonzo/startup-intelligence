@@ -240,74 +240,93 @@ def _persist_extractions(
         )
 
 
-def _query_prev_counts(
-    conn: psycopg.Connection[dict[str, Any]], window_days: int
-) -> tuple[Counter[str], Counter[str]]:
-    """Query skill/platform counts from the previous equal-duration window.
+def _window_rows(
+    conn: psycopg.Connection[dict[str, Any]], *, lo: timedelta, hi: timedelta
+) -> list[dict[str, Any]]:
+    """Latest extraction per posting with extracted_at in [now - lo, now - hi).
 
-    Previous window = [now - 2×window_days, now - window_days].
-    On first run the table is empty, so both Counters return zero for every key.
+    DISTINCT ON collapses duplicate extraction rows for the same posting — from
+    overlapping runs or cross-run retries — to the most recent, so counts reflect
+    distinct postings, not raw rows (the dedup the persistence layer assumes but
+    never enforced). Served by the (ats, posting_id, extracted_at DESC) index.
     Uses timedelta params so psycopg3 maps them to PG interval natively.
     """
-    rows = conn.execute(
+    return conn.execute(
         """
-        SELECT skills, platforms
+        SELECT DISTINCT ON (ats, posting_id) skills, platforms
         FROM extractions
-        WHERE extracted_at <  NOW() - %(current)s
-          AND extracted_at >= NOW() - %(lookback)s
+        WHERE extracted_at >= NOW() - %(lo)s
+          AND extracted_at <  NOW() - %(hi)s
+        ORDER BY ats, posting_id, extracted_at DESC
         """,
-        {
-            "current": timedelta(days=window_days),
-            "lookback": timedelta(days=window_days * 2),
-        },
+        {"lo": lo, "hi": hi},
     ).fetchall()
 
+
+def _count_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[Counter[str], Counter[str], Counter[tuple[str, str]]]:
+    """Tally skill counts, platform counts, and skill co-occurrence over rows."""
     skill_counts: Counter[str] = Counter()
     platform_counts: Counter[str] = Counter()
+    co_counts: Counter[tuple[str, str]] = Counter()
     for row in rows:
-        for s in row["skills"] or []:
+        row_skills = row["skills"] or []
+        for s in row_skills:
             skill_counts[s] += 1
         for p in row["platforms"] or []:
             platform_counts[p] += 1
-    return skill_counts, platform_counts
+        # Pairs are sorted so (A, B) and (B, A) are the same bucket
+        for pair in combinations(sorted(set(row_skills)), 2):
+            co_counts[pair] += 1
+    return skill_counts, platform_counts, co_counts
 
 
 def aggregate_trends(state: SkillsState) -> dict[str, Any]:
-    """Compute frequency deltas, new skills, and co-occurrence from normalized extractions.
+    """Compute frequency deltas, new skills, and co-occurrence over rolling windows.
 
-    Persists the current extractions to the DB first (so future runs have a
-    previous window to diff against) and advances the agent watermark in the same
-    transaction — committing them together means a later failure can't leave the
-    watermark ahead of the extractions it covers. Then queries the previous
-    equal-duration window to compute count_previous for each skill/platform. No LLM.
+    Persists this run's new extractions, then derives trends from two *symmetric*
+    DB windows: current = [now - window, now), previous = [now - 2·window, now - window).
+    Both are full-width window queries so their counts are comparable — the per-run
+    delta set drives persistence only, never the "current" window. (Diffing a one-day
+    incremental batch against a fixed 30-day block made every delta nonsense and left a
+    dead zone of postings counted in neither window.)
+
+    Watermark handling protects the time series: the candidate watermark is committed
+    with the extractions in one transaction, but only when every posting extracted
+    cleanly. If any posting failed (n_failed > 0), the watermark is held back so the
+    next run re-reads and re-extracts those postings rather than skipping them. No LLM.
     """
     extractions = _as_extractions(state.get("normalized_extractions") or [])
-    total = len(extractions)
+    n_failed = state.get("n_failed") or 0
     window_days = SKILLS_DEFAULT_WINDOW_DAYS
+    window = timedelta(days=window_days)
     candidate_watermark = state.get("watermark")
 
     with get_connection() as conn:
         _persist_extractions(extractions, conn)
-        if candidate_watermark:
+        # Advance the watermark only on a fully clean run; a held watermark means the
+        # failed postings get re-read next time (the time series must not lose them).
+        if candidate_watermark and not n_failed:
             set_agent_watermark(
                 SKILLS_WATERMARK_KEY, datetime.fromisoformat(candidate_watermark), conn=conn
             )
         conn.commit()
-        prev_skills, prev_platforms = _query_prev_counts(conn, window_days)
+        # Query AFTER commit so this run's just-persisted rows land in the current
+        # window. The two windows are equal-width and adjacent (no gap, no overlap).
+        curr_rows = _window_rows(conn, lo=window, hi=timedelta(0))
+        prev_rows = _window_rows(conn, lo=window * 2, hi=window)
 
-    # Count skill and platform frequencies in the current window
-    curr_skills: Counter[str] = Counter()
-    curr_platforms: Counter[str] = Counter()
-    co_counts: Counter[tuple[str, str]] = Counter()
+    if n_failed:
+        logger.warning(
+            "aggregate_trends: %d posting(s) failed extraction this run; holding the "
+            "watermark so they re-process next run (none were silently dropped).",
+            n_failed,
+        )
 
-    for ex in extractions:
-        for s in ex.skills:
-            curr_skills[s] += 1
-        for p in ex.platforms:
-            curr_platforms[p] += 1
-        # Pairs are sorted so (A, B) and (B, A) are the same bucket
-        for pair in combinations(sorted(set(ex.skills)), 2):
-            co_counts[pair] += 1
+    curr_skills, curr_platforms, co_counts = _count_rows(curr_rows)
+    prev_skills, prev_platforms, _ = _count_rows(prev_rows)
+    total = len(curr_rows)  # distinct postings in the current window
 
     def _trend(name: str, curr: int, prev: int) -> SkillTrend:
         return SkillTrend(
@@ -440,16 +459,16 @@ def extract_posting_fields(posting: dict[str, Any], llm: Any = None) -> _Posting
     return result
 
 
-_EMPTY_EXTRACTION = _PostingExtraction(skills=[], platforms=[], seniority=None, years_experience=None)
-
-
-def _extract_with_retry(posting: dict[str, Any], attempts: int = 2) -> _PostingExtraction:
-    """Extract one posting, retrying transient failures, then degrading to empty.
+def _extract_with_retry(posting: dict[str, Any], attempts: int = 2) -> _PostingExtraction | None:
+    """Extract one posting, retrying transient failures. Returns None if all fail.
 
     Per-posting isolation: the fan-out runs serialized (one cloud call at a time),
     so a single transient error (429/timeout) or an unparseable model response must
-    not abort the whole run. Retry covers transient blips; a final miss yields an
-    empty extraction so the posting is excluded from trends rather than crashing.
+    not abort the whole run. Retry covers transient blips. A final miss returns None
+    so the caller records a failure and aggregate_trends holds the watermark — the
+    posting is re-extracted next run rather than silently dropped. (Degrading to an
+    empty extraction would look like a real "no skills" signal and let the watermark
+    advance past the posting, losing it from the time series forever.)
     """
     for attempt in range(1, attempts + 1):
         try:
@@ -463,20 +482,25 @@ def _extract_with_retry(posting: dict[str, Any], attempts: int = 2) -> _PostingE
             if attempt < attempts:
                 time.sleep(1.0 * attempt)
     logger.error(
-        "extract_one: giving up on posting %s after %d attempts; emitting empty extraction",
+        "extract_one: giving up on posting %s after %d attempts; recording failure "
+        "(watermark held so it re-processes next run)",
         posting.get("id"), attempts,
     )
-    return _EMPTY_EXTRACTION
+    return None
 
 
 def extract_one(state: dict[str, Any]) -> dict[str, Any]:
     """Extract skills, platforms, seniority, and comp from a single posting.
 
     Receives {"posting": <postings row dict>} from Send.
-    Returns {"extractions": [SkillExtraction]} — merged via operator.add.
+    Returns {"extractions": [SkillExtraction]} on success (merged via operator.add),
+    or {"n_failed": 1} when extraction failed after retries — so aggregate_trends holds
+    the watermark and the posting is re-processed next run instead of being lost.
     """
     posting = state["posting"]
     fields = _extract_with_retry(posting)
+    if fields is None:
+        return {"n_failed": 1}
     extraction = SkillExtraction(
         posting_id=posting["id"],
         ats=posting["ats"],

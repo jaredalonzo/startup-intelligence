@@ -7,7 +7,7 @@ and fake models so no live DB / LLM / network is required.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from agents.skills import nodes
 from agents.skills.nodes import (
@@ -37,15 +37,32 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    """Minimal psycopg-like connection. Records calls; returns canned rows."""
+    """Minimal psycopg-like connection. Records calls; returns canned rows.
 
-    def __init__(self, rows: list | None = None) -> None:
+    aggregate_trends reads two DB windows (current and previous) via _window_rows,
+    distinguished by their ``hi`` interval param: current uses hi == timedelta(0),
+    previous uses hi == window. A window SELECT returns the matching canned rows;
+    any other query (load_deltas SELECT, INSERTs) returns ``rows`` as before.
+    """
+
+    def __init__(
+        self,
+        rows: list | None = None,
+        *,
+        curr_rows: list | None = None,
+        prev_rows: list | None = None,
+    ) -> None:
         self.rows = rows or []
+        self._curr = curr_rows if curr_rows is not None else self.rows
+        self._prev = prev_rows if prev_rows is not None else self.rows
         self.calls: list[tuple] = []
         self.commits = 0
 
     def execute(self, sql, params=None):  # noqa: ANN001 - test double
         self.calls.append((sql, params))
+        if isinstance(params, dict) and "hi" in params:
+            window = self._curr if params["hi"] == timedelta(0) else self._prev
+            return _FakeCursor(window)
         return _FakeCursor(self.rows)
 
     def commit(self) -> None:
@@ -149,10 +166,17 @@ def test_normalize_taxonomy_accepts_dict_extractions_from_checkpointer(monkeypat
 # ---------------------------------------------------------------------------
 
 def test_aggregate_trends_counts_thresholds_and_co_occurrence(monkeypatch):
-    conn = _FakeConn(rows=[])   # empty extractions table ⇒ prev counts all 0
+    # Current counts come from the DB current-window query (not the in-state batch);
+    # the previous window is empty so every qualifying skill reads as rising/new.
+    # Kubernetes×3, Rust×3 qualify (>= SKILLS_MIN_POSTING_COUNT); Go×1 does not.
+    curr = [
+        {"skills": ["Kubernetes", "Rust", "Go"], "platforms": ["AWS"]},
+        {"skills": ["Kubernetes", "Rust"], "platforms": ["AWS"]},
+        {"skills": ["Kubernetes", "Rust"], "platforms": ["AWS"]},
+    ]
+    conn = _FakeConn(curr_rows=curr, prev_rows=[])
     _patch_conn(monkeypatch, conn)
 
-    # Kubernetes×3, Rust×3 qualify (>= SKILLS_MIN_POSTING_COUNT); Go×1 does not.
     extractions = [
         _ex(["Kubernetes", "Rust", "Go"], ["AWS"]),
         _ex(["Kubernetes", "Rust"], ["AWS"]),
@@ -218,6 +242,28 @@ def test_aggregate_trends_skips_watermark_without_candidate(monkeypatch):
     assert conn.commits == 1
 
 
+def test_aggregate_trends_holds_watermark_when_extractions_failed(monkeypatch):
+    # C2: if any posting failed extraction this run (n_failed > 0), the watermark must
+    # NOT advance even though a candidate is present — the failed postings have to be
+    # re-read and re-extracted next run rather than silently dropped from the series.
+    conn = _FakeConn(rows=[])
+    _patch_conn(monkeypatch, conn)
+    calls: list = []
+    monkeypatch.setattr(
+        nodes, "set_agent_watermark",
+        lambda *a, **k: calls.append((a, k)),
+    )
+
+    aggregate_trends({
+        "normalized_extractions": [_ex(["Kubernetes"], ["AWS"])],
+        "watermark": "2026-06-20T00:00:00+00:00",
+        "n_failed": 1,
+    })
+
+    assert calls == []                # watermark held despite a candidate present
+    assert conn.commits == 1          # successful extractions still persisted
+
+
 def test_aggregate_trends_empty_window(monkeypatch):
     conn = _FakeConn(rows=[])
     _patch_conn(monkeypatch, conn)
@@ -227,9 +273,11 @@ def test_aggregate_trends_empty_window(monkeypatch):
 
 
 def test_aggregate_trends_accepts_dict_extractions_from_checkpointer(monkeypatch):
-    # Regression: normalized_extractions also round-trips the checkpointer, so
-    # aggregate_trends must coerce dicts back to models before reading ex.skills.
-    conn = _FakeConn(rows=[])
+    # Regression: normalized_extractions round-trips the checkpointer as plain dicts,
+    # so aggregate_trends must coerce them back to models before _persist_extractions
+    # reads ex.ats / ex.skills. (Counts themselves now come from the DB window query.)
+    curr = [{"skills": ["Kubernetes", "Rust"], "platforms": ["AWS"]} for _ in range(3)]
+    conn = _FakeConn(curr_rows=curr, prev_rows=[])
     _patch_conn(monkeypatch, conn)
     dict_exs = [_ex(["Kubernetes", "Rust"], ["AWS"]).model_dump() for _ in range(3)]
     assert all(isinstance(d, dict) for d in dict_exs)
@@ -297,9 +345,11 @@ class _FakeStructuredLLM:
         return _FakeChain(self._result)
 
 
-def test_extract_one_degrades_to_empty_on_persistent_failure(monkeypatch):
-    # A posting whose extraction keeps failing must not abort the run — it yields
-    # an empty extraction so trends just exclude it.
+def test_extract_one_records_failure_on_persistent_failure(monkeypatch):
+    # A posting whose extraction keeps failing must not abort the run, and must NOT
+    # degrade to an empty extraction — that would look like a real "no skills" result
+    # and let the watermark advance past it, dropping it from the time series. Instead
+    # it records a failure so aggregate_trends holds the watermark and retries next run.
     monkeypatch.setattr(nodes.time, "sleep", lambda *_: None)  # no real backoff in tests
     calls = {"n": 0}
 
@@ -312,10 +362,9 @@ def test_extract_one_degrades_to_empty_on_persistent_failure(monkeypatch):
     posting = {"id": "p9", "ats": "ashby", "company_slug": "openai", "title": "SRE"}
     out = extract_one({"posting": posting})
 
-    [ex] = out["extractions"]
-    assert (ex.posting_id, ex.ats, ex.company_slug) == ("p9", "ashby", "openai")
-    assert ex.skills == [] and ex.platforms == [] and ex.seniority is None
-    assert calls["n"] == 2  # retried before giving up
+    assert out == {"n_failed": 1}       # failure recorded, no extraction emitted
+    assert "extractions" not in out     # nothing persisted/counted for this posting
+    assert calls["n"] == 2              # retried before giving up
 
 
 def test_extract_one_retries_then_succeeds(monkeypatch):
