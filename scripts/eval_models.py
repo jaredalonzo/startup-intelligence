@@ -38,7 +38,7 @@ load_dotenv()
 from langsmith import Client, evaluate
 
 from agents.skills.nodes import extract_posting_fields
-from config import EVAL_JUDGE_MODEL, OLLAMA_API_KEY
+from config import EVAL_JUDGE_MODEL, OLLAMA_API_KEY, SKILLS_MIN_DESC_CHARS
 from eval.extraction_quality import make_offline_evaluator
 from eval.llm import build_llm
 from roles import is_technical
@@ -49,9 +49,9 @@ log = logging.getLogger(__name__)
 
 _DATASET = "skills-extraction-eval"
 # Postings shorter than this are stubs/redirects (e.g. "We have moved our Careers
-# Page to …"), not real JDs — they would poison the extraction eval. Real JDs run
-# into the thousands of characters.
-_MIN_DESC_CHARS = 300
+# Page to …"), not real JDs — they would poison the extraction eval. Shared with
+# load_deltas so the bake-off samples the same population the agent extracts.
+_MIN_DESC_CHARS = SKILLS_MIN_DESC_CHARS
 
 
 # ---------------------------------------------------------------------------

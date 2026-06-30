@@ -27,6 +27,7 @@ from config import (
     EXTRACTION_LLM,
     SKILLS_DEFAULT_WINDOW_DAYS,
     SKILLS_GAP_TASK_THRESHOLD_PCT,
+    SKILLS_MIN_DESC_CHARS,
     SKILLS_MIN_POSTING_COUNT,
     SKILLS_TOP_N,
     SKILLS_WATERMARK_KEY,
@@ -60,10 +61,12 @@ def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dic
     """Load technical job postings updated since the last watermark.
 
     Queries postings by first_seen_at > watermark (not updated_at, which is NULL
-    for Ashby and Workable boards that do not expose a true updatedAt field), then
-    keeps only technical roles — the skills radar targets FDE/TAM/CSE/eng, and the
-    corpus is ~half GTM/ops/recruiting noise. Pass configurable ``all_roles=True``
-    to skip the filter (a deliberate broad analysis).
+    for Ashby and Workable boards that do not expose a true updatedAt field),
+    dropping stub bodies below SKILLS_MIN_DESC_CHARS (careers-page redirects, not
+    real JDs — the same floor the bake-off dataset uses), then keeps only technical
+    roles — the skills radar targets FDE/TAM/CSE/eng, and the corpus is ~half
+    GTM/ops/recruiting noise. Pass configurable ``all_roles=True`` to skip the role
+    filter (a deliberate broad analysis).
 
     Watermark source, in priority order: an explicit ``state['watermark']``
     (set by ``--window-days`` to force a lookback), else the stored agent
@@ -92,10 +95,10 @@ def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dic
             FROM postings
             WHERE first_seen_at > %(watermark)s
               AND description_text IS NOT NULL
-              AND description_text <> ''
+              AND length(description_text) >= %(min_chars)s
             ORDER BY first_seen_at
             """,
-            {"watermark": watermark},
+            {"watermark": watermark, "min_chars": SKILLS_MIN_DESC_CHARS},
         ).fetchall()
 
     if all_roles:

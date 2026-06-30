@@ -80,6 +80,14 @@ SKILLS_WATERMARK_KEY = "skills-agent"
 # Minimum number of postings a skill must appear in to be included in the radar
 SKILLS_MIN_POSTING_COUNT = 3
 
+# Minimum description length (chars) for a posting to be worth extracting. Shorter
+# bodies are stubs/redirects ("We have moved our Careers Page to …"), not real JDs:
+# a chatty model rightly refuses them ("the JD wasn't included"), and even when it
+# complies the empty result just inflates the pct_of_postings denominator. Both
+# load_deltas and the bake-off dataset apply this floor so they extract the same
+# population. Real JDs run into the thousands of characters.
+SKILLS_MIN_DESC_CHARS = 300
+
 # Top N rising / falling skills to include in the TrendReport
 SKILLS_TOP_N = 20
 
