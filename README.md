@@ -1,11 +1,12 @@
 # Startup & Skills Intelligence Agents
 
-An agentic system with one shared data plane and two analytical heads:
+An agentic system with one shared data plane and three heads — two analytical synthesis heads and one read-only query head:
 
 - **Startup tracker** — per-company dossiers across headcount (hiring-velocity proxy), customers, technology/product, product evolution, and open positions.
 - **Skills trend agent** — aggregates engineering job descriptions across companies to surface rising/falling/new skills, platforms, and seniority signals relevant to FDE, TAM, CSE, and implementation roles.
+- **Query head (RAG)** — _(planned; see M-RAG)_ an on-demand natural-language Q&A surface over the corpus. Hybrid retrieval: `pgvector` similarity over embedded postings/dossiers combined with SQL filters on the existing typed columns and time series (e.g. "growing eng headcount" is a snapshot-delta filter, not a semantic match). Read-only — it never writes back to the store.
 
-Both agents read from the same ingestion layer. The tracker reads it per-company; the skills agent reads it as a cross-company corpus.
+All three heads read from the same ingestion layer. The tracker reads it per-company; the skills agent reads it as a cross-company aggregate; the query head reads it as a retrieval index.
 
 ## Architecture
 
@@ -14,18 +15,22 @@ Ingestion (plain Python, no LLM)
   └── ATS fetchers (Greenhouse / Lever / Ashby / Workable)
   └── Watchlist + ATS resolver
   └── Snapshot + diff (append-only time series)
+  └── Embed (watermarked; postings + dossiers → pgvector)   [planned: M-RAG]
         │
         ▼
-  Postgres
-  companies / postings / snapshots / extractions / watermarks
+  Postgres (+ pgvector)
+  companies / postings / snapshots / extractions / dossiers / watermarks
         │
         ├── Skills agent (LangGraph)
         │     load_deltas → extract_skills → normalize_taxonomy
         │     → aggregate_trends → synthesize_radar → route_outputs
         │
-        └── Tracker agent (LangGraph)
-              resolve_board → fetch_signals → snapshot → diff
-              → synthesize_dossier → score_trending → rank_and_route
+        ├── Tracker agent (LangGraph)
+        │     resolve_board → fetch_signals → snapshot → diff
+        │     → synthesize_dossier → score_trending → rank_and_route
+        │
+        └── Query head — RAG (LangGraph, read-only)   [planned: M-RAG]
+              parse_query → retrieve (hybrid: pgvector + SQL) → answer (cited)
 ```
 
 ## Watchlist
@@ -94,16 +99,18 @@ src/
     watchlist.py      # Company seed list + 4-way ATS probe + DB cache
     snapshot.py       # upsert_postings, write_snapshot, update_watermark
     diff.py           # compute_diff (watermark-based, run before upsert)
+    embed.py          # (M-RAG) watermarked embedding of postings + dossiers → pgvector
   store/
-    schema.sql        # companies, postings, snapshots, extractions, watermarks
+    schema.sql        # companies, postings, snapshots, extractions, dossiers, watermarks (+ pgvector embedding cols)
     db.py             # sync/async connection factories
-  agents/             # (M2/M3) LangGraph skills + tracker graphs
+  agents/             # (M2/M3) LangGraph skills + tracker graphs; (M-RAG) query head
   outputs/            # (M4) Notion + Linear writers
   taxonomy/           # (M2) aliases.yaml for skill normalization
 scripts/
   ingest.py           # Scheduled ingestion entrypoint
   run_skills.py       # (M2) Skills agent entrypoint
   run_tracker.py      # (M3) Tracker agent entrypoint
+  query.py            # (M-RAG) Query head entrypoint — ask a question over the corpus
 .github/workflows/
   ingest.yml          # Daily cron at 08:00 UTC
 ```
