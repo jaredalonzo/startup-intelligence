@@ -464,8 +464,13 @@ def _patch_stored_watermark(monkeypatch, value) -> None:
     monkeypatch.setattr(nodes, "get_agent_watermark", lambda _key: value)
 
 
-def test_load_deltas_defaults_watermark_and_returns_rows(monkeypatch):
-    row = {"id": "x", "title": "Software Engineer", "department": "Engineering"}
+def test_load_deltas_advances_watermark_to_newest_first_seen(monkeypatch):
+    # JAR-90: the new watermark is the max first_seen_at actually read this run, never
+    # wall-clock now(). A row inserted after this SELECT keeps a later first_seen_at
+    # and is picked up next run rather than being skipped by a raced-ahead watermark.
+    fs = datetime(2026, 6, 20, 12, 0, tzinfo=timezone.utc)
+    row = {"id": "x", "title": "Software Engineer", "department": "Engineering",
+           "first_seen_at": fs}
     conn = _FakeConn(rows=[row])
     _patch_conn(monkeypatch, conn)
     _patch_stored_watermark(monkeypatch, None)   # never run before
@@ -473,24 +478,31 @@ def test_load_deltas_defaults_watermark_and_returns_rows(monkeypatch):
     out = load_deltas({})
 
     assert out["new_postings"] == [row]
-    wm = datetime.fromisoformat(out["watermark"])
-    assert (datetime.now(timezone.utc) - wm).total_seconds() < 5   # advanced to ~now
+    assert datetime.fromisoformat(out["watermark"]) == fs   # newest row, not ~now
 
 
-def test_load_deltas_filters_non_technical_by_default(monkeypatch):
-    eng = {"id": "e", "title": "Forward Deployed Engineer", "department": "Eng"}
-    sales = {"id": "s", "title": "Account Executive", "department": "Sales"}
+def test_load_deltas_watermark_covers_all_rows_read_not_just_kept(monkeypatch):
+    # The watermark advances over every row read (rows are ordered by first_seen_at,
+    # so the last carries the max) — including the non-technical one that gets
+    # filtered out of new_postings. It needn't be re-read: it would be dropped again.
+    eng = {"id": "e", "title": "Forward Deployed Engineer", "department": "Eng",
+           "first_seen_at": datetime(2026, 6, 20, 9, 0, tzinfo=timezone.utc)}
+    sales = {"id": "s", "title": "Account Executive", "department": "Sales",
+             "first_seen_at": datetime(2026, 6, 20, 10, 0, tzinfo=timezone.utc)}
     _patch_conn(monkeypatch, _FakeConn(rows=[eng, sales]))
     _patch_stored_watermark(monkeypatch, None)
 
     out = load_deltas({})
 
-    assert out["new_postings"] == [eng]   # the GTM role is dropped
+    assert out["new_postings"] == [eng]   # the GTM role is dropped from extraction
+    assert datetime.fromisoformat(out["watermark"]) == sales["first_seen_at"]
 
 
 def test_load_deltas_all_roles_keeps_everything(monkeypatch):
-    eng = {"id": "e", "title": "ML Engineer", "department": "Eng"}
-    sales = {"id": "s", "title": "Account Executive", "department": "Sales"}
+    eng = {"id": "e", "title": "ML Engineer", "department": "Eng",
+           "first_seen_at": datetime(2026, 6, 20, 9, 0, tzinfo=timezone.utc)}
+    sales = {"id": "s", "title": "Account Executive", "department": "Sales",
+             "first_seen_at": datetime(2026, 6, 20, 10, 0, tzinfo=timezone.utc)}
     _patch_conn(monkeypatch, _FakeConn(rows=[eng, sales]))
     _patch_stored_watermark(monkeypatch, None)
 

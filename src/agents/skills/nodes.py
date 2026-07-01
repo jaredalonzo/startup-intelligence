@@ -71,7 +71,11 @@ def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dic
     Watermark source, in priority order: an explicit ``state['watermark']``
     (set by ``--window-days`` to force a lookback), else the stored agent
     watermark from a previous run, else a default first-run window. The candidate
-    new watermark (NOW()) is returned in state but only *committed* to the store in
+    new watermark is the newest ``first_seen_at`` actually read this run (not
+    wall-clock ``now()``): a row inserted between this SELECT and ``now()`` has a
+    ``first_seen_at`` beyond our max, so it is picked up next run instead of being
+    skipped by a watermark that raced past it (a TOCTOU silent-data-loss race). The
+    candidate is returned in state but only *committed* to the store in
     aggregate_trends, alongside the extractions it covers — so a crash before then
     re-processes the same postings next run rather than silently skipping them.
     """
@@ -89,7 +93,7 @@ def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dic
         rows = conn.execute(
             """
             SELECT ats, id, company_slug, title, department, team,
-                   description_text,
+                   description_text, first_seen_at,
                    compensation_min, compensation_max,
                    compensation_currency, compensation_interval
             FROM postings
@@ -110,9 +114,15 @@ def load_deltas(state: SkillsState, config: RunnableConfig | None = None) -> dic
         len(rows), len(new_postings), "" if all_roles else " (technical only)",
     )
 
+    # Advance only to the newest first_seen_at we actually read (rows are ordered
+    # ascending, so the last one carries the max). Never advance to now(): that skips
+    # any posting inserted after this SELECT but before the wall clock was captured.
+    # With no rows there is nothing to advance over — hold the queried lower bound.
+    new_watermark = rows[-1]["first_seen_at"] if rows else watermark
+
     return {
         "new_postings": new_postings,
-        "watermark": now.isoformat(),
+        "watermark": new_watermark.isoformat(),
     }
 
 
