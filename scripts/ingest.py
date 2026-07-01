@@ -23,13 +23,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 load_dotenv()
 
+from config import INGEST_DROP_GUARD_MAX_FRACTION, INGEST_DROP_GUARD_MIN_PREV
 from ingestion.ats import ashby, greenhouse, lever, workable
 from ingestion.ats.models import ATSSource, Posting
 from ingestion.diff import compute_diff
 from ingestion.signals.blog_rss import fetch_blog_posts, write_blog_posts
 from ingestion.signals.github_org import fetch_github_signals, write_github_signals
 from ingestion.signals.package_downloads import fetch_package_downloads, write_package_downloads
-from ingestion.snapshot import update_watermark, upsert_postings, write_snapshot
+from ingestion.snapshot import (
+    is_suspect_drop,
+    latest_posting_count,
+    update_watermark,
+    upsert_postings,
+    write_snapshot,
+)
 from store.db import get_connection
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -41,6 +48,17 @@ _FETCHERS: dict[ATSSource, object] = {
     "ashby":      ashby.fetch_postings,
     "workable":   workable.fetch_postings,
 }
+
+
+def _untrusted_fetch_result(slug: str, ats: ATSSource, total: int) -> dict[str, object]:
+    """Summary for a company whose ATS fetch was not trusted into the time series.
+
+    Used by both skip paths (an empty fetch and an implausible-drop fetch): no
+    snapshot is written and no dependent signal work runs, so all counts are zero.
+    """
+    return {"slug": slug, "ats": ats, "total": total, "new": 0, "removed": 0,
+            "snapshot_id": None, "gh_releases": 0, "gh_repos": 0, "blog_posts": 0,
+            "package_downloads": 0}
 
 
 async def ingest_company(
@@ -57,15 +75,30 @@ async def ingest_company(
     postings: list[Posting] = await fetch(ats_slug, client)  # type: ignore[operator]
     if not postings:
         log.warning("%s (%s:%s) returned 0 postings — skipping snapshot", slug, ats, ats_slug)
-        return {"slug": slug, "ats": ats, "total": 0, "new": 0, "removed": 0,
-                "snapshot_id": None, "gh_releases": 0, "gh_repos": 0, "blog_posts": 0,
-                "package_downloads": 0}
+        return _untrusted_fetch_result(slug, ats, 0)
     if ats_slug != slug:
         postings = [p.model_copy(update={"company_slug": slug}) for p in postings]
     current_ids = {p.id for p in postings}
 
     # ATS + snapshot (DB write)
     with get_connection() as conn:
+        # Guard the time series against a partial fetch: an implausible single-run
+        # collapse (missed page, transient 5xx short body, dropped detail fetches)
+        # would otherwise land as a permanent false "hiring collapse" snapshot. On a
+        # suspect fetch skip the whole write — leave the last good snapshot standing
+        # and re-try next run — rather than corrupting the append-only window.
+        prev_count = latest_posting_count(slug, conn)
+        if is_suspect_drop(
+            prev_count, len(postings),
+            min_prev=INGEST_DROP_GUARD_MIN_PREV,
+            max_drop_fraction=INGEST_DROP_GUARD_MAX_FRACTION,
+        ):
+            log.warning(
+                "%s (%s:%s) fetched %d postings vs previous %d — implausible drop; "
+                "treating as a partial fetch and skipping snapshot (time series unchanged)",
+                slug, ats, ats_slug, len(postings), prev_count,
+            )
+            return _untrusted_fetch_result(slug, ats, len(postings))
         new_ids, removed_ids = compute_diff(slug, ats, current_ids, conn)
         upsert_postings(postings, conn)
         snapshot_id = write_snapshot(slug, postings, new_ids, removed_ids, conn)

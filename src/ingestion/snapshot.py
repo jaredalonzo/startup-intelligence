@@ -75,6 +75,46 @@ def upsert_postings(postings: list[Posting], conn: psycopg.Connection[dict[str, 
         )
 
 
+def latest_posting_count(
+    company_slug: str, conn: psycopg.Connection[dict[str, Any]]
+) -> int | None:
+    """Most recent snapshot's posting_count for a company, or None if it has none yet.
+
+    Ordered by id (monotonic) so it is stable even if two snapshots share a
+    snapshot_at. Used by the partial-fetch guard to compare this run's count
+    against the last recorded one.
+    """
+    row = conn.execute(
+        "SELECT posting_count FROM snapshots WHERE company_slug = %s "
+        "ORDER BY id DESC LIMIT 1",
+        (company_slug,),
+    ).fetchone()
+    return int(row["posting_count"]) if row else None
+
+
+def is_suspect_drop(
+    prev_count: int | None,
+    new_count: int,
+    *,
+    min_prev: int,
+    max_drop_fraction: float,
+) -> bool:
+    """True when new_count collapses implausibly below prev_count.
+
+    That collapse is the signature of a partial/truncated fetch (a missed page, a
+    transient 5xx short body, dropped per-job detail fetches) rather than a real
+    hiring change, so the caller should skip the snapshot instead of recording a
+    false drop. Pure and side-effect free for direct unit testing.
+
+    The guard only engages once a company has a healthy prior count (>= min_prev):
+    on a tiny board a 3 -> 1 swing is ordinary noise, not truncation. A drop is
+    suspect when new_count falls below (1 - max_drop_fraction) of prev_count.
+    """
+    if prev_count is None or prev_count < min_prev:
+        return False
+    return new_count < prev_count * (1.0 - max_drop_fraction)
+
+
 def write_snapshot(
     company_slug: str,
     current_postings: list[Posting],

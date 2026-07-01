@@ -106,6 +106,25 @@ TARGET_ROLES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Ingestion — partial-fetch guard
+# ---------------------------------------------------------------------------
+
+# A partial ATS fetch (missed pagination page, transient 5xx short body, some
+# per-job detail fetches failing) returns fewer postings than really exist. Since
+# snapshots are append-only and the time series is the product, a single such
+# fetch would record a false "hiring collapse" and permanently pollute the window.
+# We treat an implausibly large single-run drop as a suspect fetch and skip the
+# snapshot rather than writing bad data. The guard only engages once a company has
+# a healthy prior count — tiny boards are too noisy for a ratio test (3 -> 1 is
+# not a signal). Below this prior count, any non-zero fetch is trusted.
+INGEST_DROP_GUARD_MIN_PREV = 5
+
+# Fraction of the previous snapshot's posting_count that a run may lose before the
+# fetch is deemed suspect. 0.6 => a drop to below 40% of the prior count in one run
+# is treated as truncation, not real attrition, and the snapshot is skipped.
+INGEST_DROP_GUARD_MAX_FRACTION = 0.6
+
+# ---------------------------------------------------------------------------
 # Tracker agent
 # ---------------------------------------------------------------------------
 
