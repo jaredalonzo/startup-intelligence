@@ -2,7 +2,7 @@
 import os
 from typing import Any
 
-from langchain_ollama import ChatOllama
+from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 # ---------------------------------------------------------------------------
 # Ollama backend — local by default, Ollama Cloud when an API key is present
@@ -48,6 +48,25 @@ def build_ollama(model: str, *, cloud: bool | None = None, **overrides: Any) -> 
     return ChatOllama(**kwargs)
 
 
+def build_ollama_embeddings(model: str, *, cloud: bool | None = None) -> OllamaEmbeddings:
+    """OllamaEmbeddings wired for the configured backend (local or Ollama Cloud).
+
+    Same backend-selection rules as ``build_ollama`` (cloud iff OLLAMA_API_KEY is
+    set unless overridden). Embeddings are deterministic by construction (no
+    sampling), so there is no temperature to pin. Used by ingestion/embed.py — the
+    one sanctioned place ingestion touches an LLM backend.
+    """
+    use_cloud = (OLLAMA_API_KEY is not None) if cloud is None else cloud
+    kwargs: dict[str, Any] = {"model": model}
+    if use_cloud:
+        kwargs["base_url"] = OLLAMA_HOST or OLLAMA_CLOUD_HOST
+        if OLLAMA_API_KEY:
+            kwargs["client_kwargs"] = {"headers": {"Authorization": f"Bearer {OLLAMA_API_KEY}"}}
+    elif OLLAMA_HOST and OLLAMA_HOST != OLLAMA_CLOUD_HOST:
+        kwargs["base_url"] = OLLAMA_HOST
+    return OllamaEmbeddings(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # LLM instances — import these in nodes, never instantiate a client there
 # ---------------------------------------------------------------------------
@@ -62,6 +81,13 @@ SYNTHESIS_LLM = build_ollama(os.getenv("SYNTHESIS_MODEL", "qwen2.5:14b"))
 # a once-per-company, quality-over-cost task, so it reuses the synthesis model.
 # Whatever model SYNTHESIS_LLM points to must support tool calling.
 RESOLVE_LLM = SYNTHESIS_LLM
+
+# Embedding model for the RAG data plane (ingestion/embed.py). Local by default.
+# EMBEDDING_DIM must match both the model's output width and the vector(N) columns
+# in schema.sql — changing the model means changing both and re-embedding the corpus.
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+EMBEDDING_DIM = 768
+EMBEDDING_LLM = build_ollama_embeddings(EMBEDDING_MODEL_NAME)
 
 # ---------------------------------------------------------------------------
 # Skills agent

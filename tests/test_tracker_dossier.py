@@ -304,8 +304,41 @@ def test_score_trending_quiet_company_is_steady():
 
 
 # ---------------------------------------------------------------------------
-# write_dossier — Notion upsert + Linear top-mover flag
+# write_dossier — Postgres persist + Notion upsert + Linear top-mover flag
 # ---------------------------------------------------------------------------
+
+class _RecordingConn:
+    """Records executed statements so persist_dossier can be asserted."""
+
+    def __init__(self) -> None:
+        self.executed: list[tuple] = []
+        self.commits = 0
+
+    def execute(self, sql, params=None):  # noqa: ANN001 - test double
+        self.executed.append((sql, params))
+        return _Cursor([])
+
+    def commit(self) -> None:
+        self.commits += 1
+
+
+def _patch_persist_conn(monkeypatch) -> _RecordingConn:
+    conn = _RecordingConn()
+
+    @contextmanager
+    def _cm():
+        yield conn
+
+    monkeypatch.setattr(dossier, "get_connection", _cm)
+    return conn
+
+
+def _dossier_insert(conn: _RecordingConn) -> tuple:
+    """The (sql, params) of the dossiers INSERT persist_dossier issued."""
+    inserts = [c for c in conn.executed if "INSERT INTO dossiers" in c[0]]
+    assert len(inserts) == 1, conn.executed
+    return inserts[0]
+
 
 def test_write_dossier_upserts_and_flags_top_mover(monkeypatch):
     calls: list[tuple] = []
@@ -314,6 +347,7 @@ def test_write_dossier_upserts_and_flags_top_mover(monkeypatch):
     mover_calls: list[dict] = []
     monkeypatch.setattr(dossier, "create_top_mover_task",
                         lambda **kw: mover_calls.append(kw) or "JAR-9")
+    conn = _patch_persist_conn(monkeypatch)
 
     score = TrendScore(composite=15.0, classification="accelerating",
                        rationale="hiring surge", is_top_mover=True)
@@ -330,6 +364,27 @@ def test_write_dossier_upserts_and_flags_top_mover(monkeypatch):
     assert kw["company_slug"] == "anthropic"
     assert kw["classification"] == "accelerating"
     assert kw["dossier_url"] == "http://notion/d"
+    # persisted to Postgres with markdown, score fields, and the Notion URL
+    _sql, params = _dossier_insert(conn)
+    assert params == ("anthropic", "## Summary\nx", 15.0, "accelerating",
+                      "hiring surge", True, "http://notion/d")
+    assert conn.commits == 1
+
+
+def test_write_dossier_persists_even_when_notion_fails(monkeypatch):
+    # A Notion failure must not lose the dossier — it persists with notion_url=None.
+    monkeypatch.setattr(dossier, "upsert_company_dossier",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("notion down")))
+    conn = _patch_persist_conn(monkeypatch)
+
+    score = TrendScore(composite=1.0, classification="steady",
+                       rationale="quiet", is_top_mover=False)
+    out = write_dossier({"dossier_markdown": "## x", "signals": _signals(), "trend_score": score})
+
+    assert out == {"dossier_url": None}
+    _sql, params = _dossier_insert(conn)
+    assert params == ("anthropic", "## x", 1.0, "steady", "quiet", False, None)
+    assert conn.commits == 1
 
 
 def test_write_dossier_noop_without_dossier(monkeypatch):
@@ -340,5 +395,7 @@ def test_write_dossier_noop_without_dossier(monkeypatch):
         called = True
 
     monkeypatch.setattr(dossier, "upsert_company_dossier", _boom)
+    conn = _patch_persist_conn(monkeypatch)
     assert write_dossier({"dossier_markdown": None, "signals": _signals()}) == {}
     assert called is False
+    assert conn.executed == []   # nothing persisted when synthesis was skipped

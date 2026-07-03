@@ -43,3 +43,25 @@ jobs:
           EXTRACTION_MODEL: gpt-oss:20b
           SYNTHESIS_MODEL: gpt-oss:120b
         run: python scripts/run_tracker.py
+
+      # Embed new/edited postings + the dossiers just written, so the RAG query
+      # head can retrieve them. Content-hash gated, so it's cheap on a steady state.
+      #
+      # Ollama Cloud serves no embedding models, so we run a local Ollama in the
+      # runner instead: nomic-embed-text is small (274MB) and CPU-only, so no GPU is
+      # needed. OLLAMA_API_KEY is deliberately NOT set on this step — without it
+      # config.build_ollama_embeddings targets the local daemon (localhost:11434)
+      # rather than the cloud host. EMBEDDING_MODEL feeds both the pull and embed.py.
+      - name: Embed corpus for retrieval
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EMBEDDING_MODEL: nomic-embed-text
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/version >/dev/null && break
+            sleep 1
+          done
+          ollama pull "$EMBEDDING_MODEL"
+          python scripts/embed.py

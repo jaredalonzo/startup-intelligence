@@ -11,6 +11,7 @@ dependencies = [
     "pydantic>=2.7",
     "psycopg[binary]>=3.1",
     "psycopg-pool>=3.2",
+    "pgvector>=0.3",
     "python-dotenv>=1.0",
     "langgraph>=0.2",
     "langgraph-checkpoint-postgres>=2.0",
@@ -58,6 +59,12 @@ explicit_package_bases = true
 # checking it. (PyYAML is covered by the types-PyYAML dev dependency.)
 [[tool.mypy.overrides]]
 module = ["feedparser"]
+ignore_missing_imports = true
+
+# pgvector ships no py.typed marker / stubs; the psycopg adapter import is
+# untyped. Nothing to gain from strict-checking it.
+[[tool.mypy.overrides]]
+module = ["pgvector", "pgvector.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

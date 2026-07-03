@@ -440,14 +440,51 @@ def score_trending(state: TrackerState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# write_dossier (deterministic — Notion upsert + Linear top-mover flag)
+# persist_dossier (deterministic — Postgres write, source of truth for the RAG head)
+# ---------------------------------------------------------------------------
+
+def persist_dossier(
+    markdown: str,
+    signals: DossierInputs,
+    score: TrendScore | None,
+    notion_url: str | None,
+    conn: Any,
+) -> None:
+    """Append one immutable dossier row to Postgres so the query head can cite it.
+
+    Append-only (one row per synthesis run); the caller owns the transaction. The
+    embedding columns are left NULL — ingestion/embed.py fills them on its next pass.
+    """
+    conn.execute(
+        """
+        INSERT INTO dossiers (
+            company_slug, dossier_markdown, composite, classification,
+            rationale, is_top_mover, notion_url
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            signals.company_slug, markdown,
+            score.composite if score else None,
+            score.classification if score else None,
+            score.rationale if score else None,
+            score.is_top_mover if score else None,
+            notion_url,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# write_dossier (deterministic — Postgres persist + Notion upsert + Linear flag)
 # ---------------------------------------------------------------------------
 
 def write_dossier(state: TrackerState) -> dict[str, Any]:
-    """Upsert the company's Notion dossier; open/refresh a Linear task for top movers.
+    """Persist the dossier to Postgres, upsert the Notion page, flag top movers.
 
     An outputs failure (Notion or Linear) must not abort the map over companies,
-    so each external write is guarded independently and degrades to a logged warning.
+    so each write is guarded independently and degrades to a logged warning. The
+    Postgres persist is the source of truth for the RAG query head and is guarded
+    the same way — independent of the Notion write, so a Notion failure only leaves
+    notion_url NULL rather than losing the dossier.
     """
     dossier = state.get("dossier_markdown")
     signals = state.get("signals")
@@ -463,6 +500,14 @@ def write_dossier(state: TrackerState) -> dict[str, Any]:
         logger.info("write_dossier: %s dossier written to Notion: %s", signals.company_slug, url)
     except Exception:
         logger.exception("write_dossier: Notion upsert failed for %s", signals.company_slug)
+
+    try:
+        with get_connection() as conn:
+            persist_dossier(dossier, signals, score, url, conn)
+            conn.commit()
+        logger.info("write_dossier: %s dossier persisted to Postgres", signals.company_slug)
+    except Exception:
+        logger.exception("write_dossier: Postgres persist failed for %s", signals.company_slug)
 
     if score and score.is_top_mover:
         try:

@@ -3,6 +3,14 @@
 -- Raw ATS payloads live in JSONB; all queryable fields are promoted to typed columns.
 
 -- ---------------------------------------------------------------------------
+-- extensions
+-- pgvector powers the RAG query head's hybrid retrieval (embedding columns +
+-- HNSW indexes below). Must precede any `vector`-typed column. Approved on the
+-- shared store — see the decision log "RAG query head over the shared corpus".
+-- ---------------------------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- ---------------------------------------------------------------------------
 -- companies
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS companies (
@@ -213,3 +221,52 @@ CREATE TABLE IF NOT EXISTS package_downloads (
 
 CREATE INDEX IF NOT EXISTS package_downloads_company_pkg_idx
     ON package_downloads (company_slug, registry, package, measured_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- RAG data plane (M-RAG.1)
+-- pgvector embedding columns + an HNSW index per embeddable table, plus the
+-- dossiers table so tracker output is persisted in the store (not only Notion)
+-- and can be embedded. Embeddings are generated deterministically in ingestion
+-- (ingestion/embed.py) via the Ollama backend; nothing here is an LLM node.
+--
+-- Re-embed bookkeeping (per row): content_hash gates whether the text changed
+-- since it was last embedded (source-agnostic — Ashby/Workable expose no
+-- updated_at), and embedding_model records which model produced the vector so a
+-- model change forces a re-embed. vector(768) matches nomic-embed-text; changing
+-- the model means changing this dimension AND re-embedding the corpus.
+-- ---------------------------------------------------------------------------
+ALTER TABLE postings ADD COLUMN IF NOT EXISTS embedding       vector(768);
+ALTER TABLE postings ADD COLUMN IF NOT EXISTS embedding_model TEXT;
+ALTER TABLE postings ADD COLUMN IF NOT EXISTS content_hash    TEXT;   -- sha256 of the embedded text
+ALTER TABLE postings ADD COLUMN IF NOT EXISTS embedded_at     TIMESTAMPTZ;
+
+-- HNSW over cosine distance (the `<=>` operator the query head orders by).
+CREATE INDEX IF NOT EXISTS postings_embedding_hnsw
+    ON postings USING hnsw (embedding vector_cosine_ops);
+
+-- ---------------------------------------------------------------------------
+-- dossiers
+-- Append-only. One row per tracker synthesis run per company (dossiers are
+-- immutable once written). Persisted here so the query head can retrieve and
+-- cite them; notion_url links back to the living Notion page.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dossiers (
+    id               BIGSERIAL   PRIMARY KEY,
+    company_slug     TEXT        NOT NULL REFERENCES companies(slug),
+    dossier_markdown TEXT        NOT NULL,
+    composite        REAL,                              -- TrendScore.composite
+    classification   TEXT,                              -- accelerating | steady | cooling
+    rationale        TEXT,
+    is_top_mover     BOOLEAN,
+    notion_url       TEXT,
+    generated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    embedding        vector(768),
+    embedding_model  TEXT,
+    content_hash     TEXT,
+    embedded_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS dossiers_company_generated_idx
+    ON dossiers (company_slug, generated_at DESC);
+CREATE INDEX IF NOT EXISTS dossiers_embedding_hnsw
+    ON dossiers USING hnsw (embedding vector_cosine_ops);
