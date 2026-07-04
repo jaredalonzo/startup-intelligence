@@ -88,6 +88,14 @@ def test_posting_text_combines_title_and_body():
     assert posting_text({"title": None, "description_text": None}) == "\n\n"
 
 
+def test_posting_text_caps_length_to_backstop():
+    # A pathologically long JD is truncated so it can't overflow the embedding
+    # model's context window and 400 the whole batch.
+    long_body = "x" * (embed.EMBED_MAX_CHARS + 5000)
+    out = posting_text({"title": "T", "description_text": long_body})
+    assert len(out) == embed.EMBED_MAX_CHARS
+
+
 # ---------------------------------------------------------------------------
 # re-embed gate
 # ---------------------------------------------------------------------------

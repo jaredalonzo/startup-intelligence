@@ -48,16 +48,22 @@ def build_ollama(model: str, *, cloud: bool | None = None, **overrides: Any) -> 
     return ChatOllama(**kwargs)
 
 
-def build_ollama_embeddings(model: str, *, cloud: bool | None = None) -> OllamaEmbeddings:
+def build_ollama_embeddings(
+    model: str, *, cloud: bool | None = None, num_ctx: int | None = None
+) -> OllamaEmbeddings:
     """OllamaEmbeddings wired for the configured backend (local or Ollama Cloud).
 
     Same backend-selection rules as ``build_ollama`` (cloud iff OLLAMA_API_KEY is
     set unless overridden). Embeddings are deterministic by construction (no
-    sampling), so there is no temperature to pin. Used by ingestion/embed.py — the
-    one sanctioned place ingestion touches an LLM backend.
+    sampling), so there is no temperature to pin. ``num_ctx`` requests a larger
+    context window for models that honor it (nomic-embed-text's Ollama build does
+    not — see ingestion/embed.py's EMBED_MAX_CHARS, the real length guard). Used by
+    ingestion/embed.py — the one sanctioned place ingestion touches an LLM backend.
     """
     use_cloud = (OLLAMA_API_KEY is not None) if cloud is None else cloud
     kwargs: dict[str, Any] = {"model": model}
+    if num_ctx is not None:
+        kwargs["num_ctx"] = num_ctx
     if use_cloud:
         kwargs["base_url"] = OLLAMA_HOST or OLLAMA_CLOUD_HOST
         if OLLAMA_API_KEY:
@@ -87,7 +93,12 @@ RESOLVE_LLM = SYNTHESIS_LLM
 # in schema.sql — changing the model means changing both and re-embedding the corpus.
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 EMBEDDING_DIM = 768
-EMBEDDING_LLM = build_ollama_embeddings(EMBEDDING_MODEL_NAME)
+# Request a larger context window for models that honor it. nomic-embed-text's
+# Ollama build ignores this and caps embeddings at ~2048 tokens, so the real guard
+# against 400s is ingestion/embed.py's EMBED_MAX_CHARS; this still helps if the
+# embedding model is swapped for one that respects num_ctx.
+EMBEDDING_NUM_CTX = 8192
+EMBEDDING_LLM = build_ollama_embeddings(EMBEDDING_MODEL_NAME, num_ctx=EMBEDDING_NUM_CTX)
 
 # ---------------------------------------------------------------------------
 # Skills agent

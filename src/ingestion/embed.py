@@ -31,6 +31,18 @@ logger = logging.getLogger(__name__)
 # Cap per embed request so a first-run backfill doesn't build one giant call.
 EMBED_BATCH_SIZE = 64
 
+# Cap embed-text length. nomic-embed-text's Ollama build effectively limits
+# embeddings to ~2048 tokens and 400s longer inputs (config requests num_ctx=8192
+# but this model ignores it), and one over-long text 400s its whole batch. 8000
+# chars stays under 2048 tokens for JD/English text — verified failure-free across
+# the corpus's longest postings — while keeping the bulk of every JD. The content
+# hash is computed on the capped text, so the re-embed gate stays consistent.
+EMBED_MAX_CHARS = 8000
+
+
+def _cap(text: str) -> str:
+    return text[:EMBED_MAX_CHARS]
+
 # (primary-key params, text to embed, content hash of that text)
 _Pending = tuple[tuple[Any, ...], str, str]
 
@@ -44,7 +56,7 @@ def posting_text(row: dict[str, Any]) -> str:
     """The text embedded for a posting: title (carries signal) then the JD body."""
     title = row.get("title") or ""
     body = row.get("description_text") or ""
-    return f"{title}\n\n{body}"
+    return _cap(f"{title}\n\n{body}")
 
 
 def _needs_embedding(stored_hash: str | None, stored_model: str | None, text_hash: str) -> bool:
@@ -89,6 +101,7 @@ def _embed_and_write(
             conn.execute(update_sql, (Vector(vec), EMBEDDING_MODEL_NAME, text_hash, *pk))
         conn.commit()
         written += len(batch)
+        logger.info("embed: %s progress %d/%d", label, written, len(pending))
 
     logger.info("embed: %s embedded %d row(s)", label, written)
     return written
@@ -143,7 +156,7 @@ def embed_dossiers(conn: psycopg.Connection[dict[str, Any]]) -> int:
         """
     ).fetchall()
     pending = _collect_pending(
-        rows, text_of=lambda r: r["dossier_markdown"], pk_of=lambda r: (r["id"],)
+        rows, text_of=lambda r: _cap(r["dossier_markdown"]), pk_of=lambda r: (r["id"],)
     )
     return _embed_and_write(
         conn,
