@@ -19,6 +19,11 @@ jobs:
   run-tracker:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Single source for the embedding model name — read by the pull, the cache key,
+    # and embed.py (config's EMBEDDING_MODEL). Job-level so it's usable in the
+    # cache-key expression, which step-level env would not be.
+    env:
+      EMBEDDING_MODEL: nomic-embed-text
 
     steps:
       - uses: actions/checkout@v4
@@ -44,19 +49,32 @@ jobs:
           SYNTHESIS_MODEL: gpt-oss:120b
         run: python scripts/run_tracker.py
 
-      # Embed new/edited postings + the dossiers just written, so the RAG query
-      # head can retrieve them. Content-hash gated, so it's cheap on a steady state.
+      # Restore the embedding model from GitHub's cache to skip re-pulling it from
+      # the Ollama registry each run. Runners are ephemeral (a fresh VM per run), so
+      # this is a remote save/restore keyed by the model name — not disk persistence.
+      # The path must match OLLAMA_MODELS in the next step. Immutable per key, so it
+      # saves once on the first run and is a no-op restore thereafter.
+      - name: Cache the Ollama embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-models-${{ env.EMBEDDING_MODEL }}
+
+      # Embed new/edited postings + the dossiers just written, so the RAG query head
+      # can retrieve them. Content-hash gated, so it's cheap on a steady state.
       #
       # Ollama Cloud serves no embedding models, so we run a local Ollama in the
-      # runner instead: nomic-embed-text is small (274MB) and CPU-only, so no GPU is
-      # needed. OLLAMA_API_KEY is deliberately NOT set on this step — without it
-      # config.build_ollama_embeddings targets the local daemon (localhost:11434)
-      # rather than the cloud host. EMBEDDING_MODEL feeds both the pull and embed.py.
+      # runner: nomic-embed-text is small (274MB) and CPU-only, no GPU needed.
+      # OLLAMA_API_KEY is deliberately NOT set on this step — without it
+      # config.build_ollama_embeddings targets the local daemon (localhost:11434),
+      # not the cloud host. OLLAMA_MODELS pins the model dir to the cached path
+      # regardless of which user the daemon runs as; on a cache hit `ollama pull` is
+      # a fast no-op. EMBEDDING_MODEL is inherited from the job env.
       - name: Embed corpus for retrieval
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          EMBEDDING_MODEL: nomic-embed-text
         run: |
+          export OLLAMA_MODELS="$HOME/.ollama/models"
           curl -fsSL https://ollama.com/install.sh | sh
           ollama serve > /tmp/ollama.log 2>&1 &
           for i in $(seq 1 30); do
