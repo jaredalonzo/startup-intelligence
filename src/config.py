@@ -120,6 +120,15 @@ EMBEDDING_LLM = build_ollama_embeddings(
     EMBEDDING_MODEL_NAME, num_ctx=EMBEDDING_NUM_CTX, cloud=False
 )
 
+# Query head (M-RAG.2). parse_query is tool-calling, so like RESOLVE_LLM it rides
+# the synthesis model unless overridden — whatever it points to must support tools.
+# Answer synthesis pins a stronger model (CLAUDE.md: "may pin a stronger model
+# there"): gpt-oss:120b runs on Ollama Cloud when OLLAMA_API_KEY is set, the same
+# path the eval judge uses; override QUERY_ANSWER_MODEL for a local-only setup.
+_QUERY_PARSE_MODEL = os.getenv("QUERY_PARSE_MODEL")
+QUERY_PARSE_LLM = build_ollama(_QUERY_PARSE_MODEL) if _QUERY_PARSE_MODEL else SYNTHESIS_LLM
+QUERY_ANSWER_LLM = build_ollama(os.getenv("QUERY_ANSWER_MODEL", "gpt-oss:120b"))
+
 # ---------------------------------------------------------------------------
 # Skills agent
 # ---------------------------------------------------------------------------
@@ -234,6 +243,29 @@ TRACKER_SCORE_CAPS = {
 # against the live distribution as snapshot history deepens.
 TRACKER_ACCEL_BAND = 40.0
 TRACKER_COOL_BAND = -5.0
+
+# ---------------------------------------------------------------------------
+# Query head (agents/query) — hybrid retrieval + grounded answer
+# ---------------------------------------------------------------------------
+
+# Posting rows fed to the answer node per question (pgvector top-k after filters).
+QUERY_TOP_K_POSTINGS = 12
+
+# Dossier rows fed to the answer node (latest-per-company only).
+QUERY_TOP_K_DOSSIERS = 4
+
+# Per-document text slice included in the answer context. Whole JDs would blow
+# the context for no grounding benefit; the head of a JD carries the signal.
+QUERY_SNIPPET_CHARS = 1200
+
+# Snapshots window for the growing-eng filter: a company qualifies when its
+# latest eng_count within this window exceeds its oldest (the same
+# latest-vs-oldest delta shape the tracker's window trend uses).
+QUERY_ENG_GROWTH_LOOKBACK_DAYS = 30
+
+# LangSmith feedback keys for the query-head evals (scripts/eval_query.py).
+QUERY_EVAL_RETRIEVAL_KEY = "query_retrieval"
+QUERY_EVAL_FAITHFULNESS_KEY = "query_faithfulness"
 
 # ---------------------------------------------------------------------------
 # Outputs — Linear (outputs/linear.py)
