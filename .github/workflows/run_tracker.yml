@@ -23,7 +23,7 @@ jobs:
     # and embed.py (config's EMBEDDING_MODEL). Job-level so it's usable in the
     # cache-key expression, which step-level env would not be.
     env:
-      EMBEDDING_MODEL: nomic-embed-text
+      EMBEDDING_MODEL: granite-embedding:278m
 
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
       # can retrieve them. Content-hash gated, so it's cheap on a steady state.
       #
       # Ollama Cloud serves no embedding models, so we run a local Ollama in the
-      # runner: nomic-embed-text is small (274MB) and CPU-only, no GPU needed.
+      # runner: granite-embedding:278m is small (~560MB) and CPU-only, no GPU needed.
       # OLLAMA_API_KEY is deliberately NOT set on this step — without it
       # config.build_ollama_embeddings targets the local daemon (localhost:11434),
       # not the cloud host. OLLAMA_MODELS pins the model dir to the cached path

@@ -10,8 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from config import EMBEDDING_DOC_PREFIX  # noqa: E402
 from ingestion import embed  # noqa: E402
-from ingestion.embed import content_hash, embed_postings, posting_text  # noqa: E402
+from ingestion.embed import content_hash, dossier_text, embed_postings, posting_text  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -82,10 +83,25 @@ def test_content_hash_stable_and_sensitive():
     assert content_hash("abc") != content_hash("abd")
 
 
-def test_posting_text_combines_title_and_body():
-    assert posting_text({"title": "SRE", "description_text": "oncall"}) == "SRE\n\noncall"
+def test_posting_text_combines_prefix_title_and_body():
+    assert posting_text({"title": "SRE", "description_text": "oncall"}) == (
+        f"{EMBEDDING_DOC_PREFIX}SRE\n\noncall"
+    )
     # tolerates missing fields
-    assert posting_text({"title": None, "description_text": None}) == "\n\n"
+    assert posting_text({"title": None, "description_text": None}) == f"{EMBEDDING_DOC_PREFIX}\n\n"
+
+
+def test_embedded_text_carries_the_document_prefix():
+    # nomic's asymmetric convention: corpus text must open with the document
+    # prefix (queries use the query prefix). The prefix sits inside the cap and
+    # the hash, so it can never be truncated away or bypass the re-embed gate.
+    assert posting_text(_posting_row("p")).startswith(EMBEDDING_DOC_PREFIX)
+    assert dossier_text({"dossier_markdown": "# Acme\n\nSteady."}).startswith(EMBEDDING_DOC_PREFIX)
+
+
+def test_dossier_text_caps_length():
+    long_md = "y" * (embed.EMBED_MAX_CHARS + 100)
+    assert len(dossier_text({"dossier_markdown": long_md})) == embed.EMBED_MAX_CHARS
 
 
 def test_posting_text_caps_length_to_backstop():

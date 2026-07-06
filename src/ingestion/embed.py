@@ -11,6 +11,12 @@ different model. Unchanged rows never hit the model, so a run never re-embeds th
 whole corpus — but an edit is caught on every source, including Ashby/Workable
 boards that expose no ``updated_at`` a timestamp watermark could key on.
 
+Corpus text carries the embedding model's document task prefix (from config;
+empty for granite-embedding, which uses none) and the query head prepends the
+matching query prefix. The prefix is part of the hashed text and the model name
+is stored per row, so changing either flips the gate and the full corpus
+re-embeds on the next run — that IS the migration path, no manual backfill.
+
 Run via ``scripts/embed.py`` after ingestion has populated the store.
 """
 from __future__ import annotations
@@ -23,7 +29,7 @@ import psycopg
 from pgvector import Vector
 from pgvector.psycopg import register_vector
 
-from config import EMBEDDING_LLM, EMBEDDING_MODEL_NAME
+from config import EMBEDDING_DOC_PREFIX, EMBEDDING_LLM, EMBEDDING_MODEL_NAME
 from store.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -31,11 +37,11 @@ logger = logging.getLogger(__name__)
 # Cap per embed request so a first-run backfill doesn't build one giant call.
 EMBED_BATCH_SIZE = 64
 
-# Cap embed-text length. nomic-embed-text's Ollama build effectively limits
-# embeddings to ~2048 tokens and 400s longer inputs (config requests num_ctx=8192
-# but this model ignores it), and one over-long text 400s its whole batch. 8000
-# chars stays under 2048 tokens for JD/English text — verified failure-free across
-# the corpus's longest postings — while keeping the bulk of every JD. The content
+# Cap embed-text length — a char-level backstop against models that 400 on
+# over-long input instead of truncating (nomic-embed-text did; one over-long text
+# 400s its whole batch). granite-embedding truncates to its 512-token window
+# server-side, so with it this cap is belt-and-braces: only the head of the text
+# — title + JD opening, where the signal lives — embeds either way. The content
 # hash is computed on the capped text, so the re-embed gate stays consistent.
 EMBED_MAX_CHARS = 8000
 
@@ -53,10 +59,19 @@ def content_hash(text: str) -> str:
 
 
 def posting_text(row: dict[str, Any]) -> str:
-    """The text embedded for a posting: title (carries signal) then the JD body."""
+    """The text embedded for a posting: doc prefix, title (carries signal), JD body.
+
+    The prefix goes inside the cap so it sits at the head (never truncated away)
+    and inside the hashed text (the gate sees prefix changes as edits).
+    """
     title = row.get("title") or ""
     body = row.get("description_text") or ""
-    return _cap(f"{title}\n\n{body}")
+    return _cap(f"{EMBEDDING_DOC_PREFIX}{title}\n\n{body}")
+
+
+def dossier_text(row: dict[str, Any]) -> str:
+    """The text embedded for a dossier: doc prefix + the dossier markdown, capped."""
+    return _cap(f"{EMBEDDING_DOC_PREFIX}{row['dossier_markdown']}")
 
 
 def _needs_embedding(stored_hash: str | None, stored_model: str | None, text_hash: str) -> bool:
@@ -156,7 +171,7 @@ def embed_dossiers(conn: psycopg.Connection[dict[str, Any]]) -> int:
         """
     ).fetchall()
     pending = _collect_pending(
-        rows, text_of=lambda r: _cap(r["dossier_markdown"]), pk_of=lambda r: (r["id"],)
+        rows, text_of=dossier_text, pk_of=lambda r: (r["id"],)
     )
     return _embed_and_write(
         conn,

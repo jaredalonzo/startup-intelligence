@@ -90,15 +90,35 @@ RESOLVE_LLM = SYNTHESIS_LLM
 
 # Embedding model for the RAG data plane (ingestion/embed.py). Local by default.
 # EMBEDDING_DIM must match both the model's output width and the vector(N) columns
-# in schema.sql — changing the model means changing both and re-embedding the corpus.
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+# in schema.sql — changing the model means changing both and re-embedding the corpus
+# (the hash gate re-embeds automatically on a model-name change).
+# granite-embedding:278m replaced nomic-embed-text: nomic's Ollama build produced
+# degenerate geometry (case-only pairs at cos 0.43 where its uncased tokenizer
+# guarantees 1.0), tanking retrieval recall; granite probed clean (0.98/0.91) with
+# the widest relevant-vs-irrelevant JD gap. Its 512-token window truncates
+# server-side to the head — title + JD opening — which is where the signal lives.
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "granite-embedding:278m")
 EMBEDDING_DIM = 768
-# Request a larger context window for models that honor it. nomic-embed-text's
-# Ollama build ignores this and caps embeddings at ~2048 tokens, so the real guard
-# against 400s is ingestion/embed.py's EMBED_MAX_CHARS; this still helps if the
-# embedding model is swapped for one that respects num_ctx.
-EMBEDDING_NUM_CTX = 8192
-EMBEDDING_LLM = build_ollama_embeddings(EMBEDDING_MODEL_NAME, num_ctx=EMBEDDING_NUM_CTX)
+# Model-specific task prefixes prepended to corpus/query text before embedding.
+# granite-embedding uses none. (nomic used "search_document: "/"search_query: ";
+# embeddinggemma would use its own convention.) The prefix is part of the hashed
+# corpus text, so changing these re-embeds the corpus via the hash gate.
+EMBEDDING_DOC_PREFIX = ""
+EMBEDDING_QUERY_PREFIX = ""
+# Optional context-window request for models that honor it. granite truncates
+# over-length input to its 512-token window server-side (verified: no 400s, head
+# of the text is what embeds), so no override is needed; set this if the model is
+# swapped for one that both supports and requires a larger window. EMBED_MAX_CHARS
+# in ingestion/embed.py remains the char-level backstop.
+EMBEDDING_NUM_CTX: int | None = None
+# cloud=False: Ollama Cloud serves NO embedding models, so embeddings always use
+# the local daemon (or an explicit non-cloud OLLAMA_HOST) even when OLLAMA_API_KEY
+# is set for the chat models — otherwise a key in the env would silently point
+# embedding calls at a backend that 404s them (the query CLI needs the key for
+# answer synthesis while embedding the question locally).
+EMBEDDING_LLM = build_ollama_embeddings(
+    EMBEDDING_MODEL_NAME, num_ctx=EMBEDDING_NUM_CTX, cloud=False
+)
 
 # ---------------------------------------------------------------------------
 # Skills agent
