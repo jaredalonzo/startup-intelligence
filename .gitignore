@@ -10,3 +10,6 @@ build/
 
 # Local-only docs/decision notes; not tracked
 docs/
+
+# Local-only manual smoke test (hits the shared DB + a local Ollama); kept for reference
+scripts/embed_smoke.py
