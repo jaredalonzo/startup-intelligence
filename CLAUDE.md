@@ -8,7 +8,7 @@ An agentic system with **one shared data plane and three heads** — two analyti
 
 - **Startup tracker** — builds per-company dossiers across five metrics: headcount (hiring-velocity proxy), customers, technology/product, product evolution, and open positions.
 - **Skills trend agent** — aggregates engineering/technical job descriptions *across* companies to surface rising / falling / newly-appearing skills, platforms, and seniority signals relevant to FDE, TAM, CSE, and implementation roles.
-- **Query head (RAG)** — an on-demand natural-language question-answering surface over the corpus (postings + dossiers). It only *reads* the store; it writes nothing back. Retrieval is **hybrid** — pgvector similarity over embedded postings/dossiers combined with SQL filters on the existing typed columns and time series (e.g. "growing eng headcount" is a `snapshots` delta filter, not a semantic match). See the decision log entry "RAG query head over the shared corpus". Planned; see Status (M-RAG).
+- **Query head (RAG)** — an on-demand natural-language question-answering surface over the corpus (postings + dossiers). It only *reads* the store; it writes nothing back. Retrieval is **hybrid** — pgvector similarity over embedded postings/dossiers combined with SQL filters on the existing typed columns and time series (e.g. "growing eng headcount" is a `snapshots` delta filter, not a semantic match). See the decision log entry "RAG query head over the shared corpus". Built through the local CLI (`scripts/query.py`); serving surface pending — see Status (M-RAG).
 
 All three heads read from the **same** ingestion + snapshot layer. The tracker reads it per-company; the skills agent reads it as a cross-company aggregate; the query head reads it as a retrieval index. There is one substrate and N heads — do not duplicate ingestion per head.
 
@@ -143,7 +143,7 @@ Retrieval never re-derives trends by clustering; when a question is about trends
 
 Phase M1 (shared ingestion + storage) first, then M2 (skills agent — the wedge), then M3 (tracker), then M4 (outputs + observability). See the Linear project for current issues.
 
-**M-RAG (query head)** — planned, phased so retrieval is proven before any serving infra:
-- **M-RAG.1** — data plane: `pgvector` extension + `embedding` columns, `ingestion/embed.py` (watermarked backfill), and persisting tracker dossiers into the store so they can be embedded. Pure data-plane; no user-facing surface.
-- **M-RAG.2** — hybrid retrieval + grounded answer as a **local CLI** (`scripts/query.py`), with retrieval-quality + answer-faithfulness evals reusing the existing LLM-as-judge harness (`eval/`). Validates the idea cheaply before infra.
-- **M-RAG.3** — the external serving surface (the first always-on component; leaning Slack for built-in auth + rate limiting). Only after M-RAG.2 proves out.
+**M-RAG (query head)** — phased so retrieval is proven before any serving infra:
+- **M-RAG.1** — **done.** Data plane: `pgvector` extension + `embedding` columns, `ingestion/embed.py` (hash-gated incremental embed), and tracker dossiers persisted into the store so they can be embedded. Embedding model: `granite-embedding:278m` (replaced nomic-embed-text, whose Ollama build produced degenerate geometry — see config.py); model-specific task prefixes are pinned in `config.py` (empty for granite).
+- **M-RAG.2** — **done.** Hybrid retrieval + grounded answer as a **local CLI** (`scripts/query.py`; graph in `src/agents/query/`), with retrieval-recall + answer-faithfulness evals reusing the existing LLM-as-judge harness (`src/eval/`, dataset seed in `src/eval/query_dataset_seed.py`, runner `scripts/eval_query.py`).
+- **M-RAG.3** — the external serving surface (the first always-on component; leaning Slack for built-in auth + rate limiting). Next up.
