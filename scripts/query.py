@@ -30,8 +30,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from agents.query import nodes
-from agents.query.graph import compile_graph
+from agents.query.run import run_query
 from agents.query.state import QueryState
 from config import EMBEDDING_MODEL_NAME, LLM_CALL_BUDGET_PER_RUN, LLM_TOKEN_BUDGET_PER_RUN
 from observability import CostGuard, init_tracing
@@ -87,35 +86,12 @@ def _print_hits(result: QueryState) -> None:
     print()
 
 
-async def _run(question: str, corpus: str | None, guard: CostGuard) -> QueryState:
-    state: QueryState = {
-        "question": question,
-        "plan": None,
-        "parse_fallback": False,
-        "postings": None,
-        "dossiers": None,
-        "answer_markdown": None,
-    }
-    if corpus is None:
-        graph = compile_graph()
-        return await graph.ainvoke(state, config={"callbacks": [guard]})  # type: ignore[return-value]
-
-    # --corpus pins the plan's corpus between parse and retrieve, so the
-    # override runs the nodes directly (same functions the graph wires).
-    state.update(await nodes.parse_query(state))  # type: ignore[typeddict-item]
-    if state["plan"] is not None:
-        state["plan"] = state["plan"].model_copy(update={"corpus": corpus})
-    state.update(await nodes.retrieve(state))  # type: ignore[typeddict-item]
-    state.update(await nodes.answer(state))  # type: ignore[typeddict-item]
-    return state
-
-
 def main() -> None:
     args = _parse_args()
     guard = CostGuard(LLM_CALL_BUDGET_PER_RUN, LLM_TOKEN_BUDGET_PER_RUN)
 
     try:
-        result = asyncio.run(_run(args.question, args.corpus, guard))
+        result = asyncio.run(run_query(args.question, corpus=args.corpus, callbacks=[guard]))
     except RuntimeError as exc:
         if "DATABASE_URL" in str(exc):
             log.error("DATABASE_URL is not set — point it at the shared Postgres (.env).")
