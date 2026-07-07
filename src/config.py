@@ -296,6 +296,30 @@ LLM_CALL_BUDGET_PER_RUN = int(os.getenv("LLM_CALL_BUDGET_PER_RUN", "5000"))
 LLM_TOKEN_BUDGET_PER_RUN = int(os.getenv("LLM_TOKEN_BUDGET_PER_RUN", "5000000"))
 
 # ---------------------------------------------------------------------------
+# Serving surface (serving/) — per-request guardrails for the query head
+# ---------------------------------------------------------------------------
+
+# The query graph makes exactly 2 LLM calls per request (parse + answer; the
+# query embedding is an embeddings call and never hits the LLM callback path),
+# so these per-request budgets are runaway detection, not normal ceilings.
+# Soft, like the per-run budgets above: breach warns, the request finishes.
+QUERY_REQUEST_CALL_BUDGET = int(os.getenv("QUERY_REQUEST_CALL_BUDGET", "5"))
+# ~12 posting snippets * 1200 chars + 4 dossiers + prompt ≈ 10-15k tokens.
+QUERY_REQUEST_TOKEN_BUDGET = int(os.getenv("QUERY_REQUEST_TOKEN_BUDGET", "60000"))
+# The hard rail: graph run wall-clock, request 504s past it.
+QUERY_REQUEST_TIMEOUT_S = float(os.getenv("QUERY_REQUEST_TIMEOUT_S", "120"))
+# In-process token bucket (single uvicorn worker — see scripts/serve.py).
+QUERY_RATE_PER_MINUTE = float(os.getenv("QUERY_RATE_PER_MINUTE", "10"))
+QUERY_RATE_BURST = int(os.getenv("QUERY_RATE_BURST", "3"))
+# Concurrent graph runs toward the LLM backend. Local Ollama serializes
+# generations anyway — more in flight just queues inside the daemon and blows
+# the request timeout. Raise only for a cloud/remote backend.
+QUERY_MAX_CONCURRENCY = int(os.getenv("QUERY_MAX_CONCURRENCY", "1"))
+# Retrieval keeps per-request store connections (store/db.get_connection):
+# the Neon TLS handshake per request is real but dwarfed by the LLM calls at
+# these rates. Pool factories exist in store/db.py if this ever changes.
+
+# ---------------------------------------------------------------------------
 # Evaluation — LLM-as-judge for extraction quality (eval/extraction_quality.py)
 # ---------------------------------------------------------------------------
 
