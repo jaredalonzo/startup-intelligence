@@ -42,8 +42,10 @@ class Citation(BaseModel):
 class QueryUsage(BaseModel):
     llm_calls: int
     # 0 when the backend reports no token usage (Ollama sometimes doesn't).
-    # Counts parse + answer only: the query embedding is an embeddings call
-    # and never fires LLM callbacks — that is by design, not a missing count.
+    # Undercounts by design, don't "fix" it: the query embedding is an
+    # embeddings call, and parse_query's tool-use goes through the raw ollama
+    # client (llm_structured._OllamaToolCaller) — neither fires LangChain
+    # callbacks, so usually only the answer call is counted here.
     llm_tokens: int
     duration_ms: int
 
