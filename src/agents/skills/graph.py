@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from typing import Iterator, Literal
+from typing import Any, Iterator, Literal
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -24,6 +24,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 from psycopg import Connection
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from agents.skills.state import SkillExtraction, SkillTrend, SkillsState, TrendReport
 from agents.skills import nodes
@@ -89,13 +90,22 @@ def make_checkpointer() -> Iterator[PostgresSaver]:
         allowed_msgpack_modules=[SkillExtraction, SkillTrend, TrendReport],
     )
     db_url = os.environ["DATABASE_URL"]
-    # The checkpointer holds one connection open for the whole run, but the graph
-    # is mostly idle on it — blocked on slow LLM calls between super-steps. A
-    # serverless Postgres (Neon) proxy reaps that idle socket, so the final
-    # put_writes dies with "SSL connection has been closed unexpectedly". TCP
-    # keepalives keep the connection warm across those multi-minute idle gaps.
-    with Connection.connect(
-        db_url, autocommit=True, prepare_threshold=0, row_factory=dict_row,
-        keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
-    ) as conn:
-        yield PostgresSaver(conn, serde=serde)
+    # The graph sits idle on the DB between super-steps — blocked on slow LLM
+    # calls — and Neon closes the session server-side across long gaps, so a
+    # later checkpoint write dies with "SSL connection has been closed
+    # unexpectedly". TCP keepalives alone proved insufficient (they only defeat
+    # NAT idle drops, not server-side session reaping): hand PostgresSaver a
+    # pool that health-checks connections on checkout, so a dead socket is
+    # replaced instead of crashing the run.
+    with ConnectionPool[Connection[dict[str, Any]]](
+        db_url,
+        min_size=1,
+        max_size=2,
+        check=ConnectionPool.check_connection,
+        kwargs={
+            "autocommit": True, "prepare_threshold": 0, "row_factory": dict_row,
+            "keepalives": 1, "keepalives_idle": 30,
+            "keepalives_interval": 10, "keepalives_count": 5,
+        },
+    ) as pool:
+        yield PostgresSaver(pool, serde=serde)
