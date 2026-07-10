@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Any, Iterator
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -29,6 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from psycopg import Connection
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from agents.tracker.state import BoardResolution, DossierInputs, TrackerState, TrendScore
 from agents.tracker import dossier, nodes
@@ -81,7 +82,19 @@ def make_checkpointer() -> Iterator[PostgresSaver]:
         allowed_msgpack_modules=[BoardResolution, DossierInputs, TrendScore]
     )
     db_url = os.environ["DATABASE_URL"]
-    with Connection.connect(
-        db_url, autocommit=True, prepare_threshold=0, row_factory=dict_row
-    ) as conn:
-        yield PostgresSaver(conn, serde=serde)
+    # Same failure mode as the skills graph: Neon reaps the session server-side
+    # while the graph is blocked on LLM calls, killing a later checkpoint write.
+    # A pool that health-checks connections on checkout replaces a dead socket
+    # instead of crashing the run; keepalives cover NAT idle drops in between.
+    with ConnectionPool[Connection[dict[str, Any]]](
+        db_url,
+        min_size=1,
+        max_size=2,
+        check=ConnectionPool.check_connection,
+        kwargs={
+            "autocommit": True, "prepare_threshold": 0, "row_factory": dict_row,
+            "keepalives": 1, "keepalives_idle": 30,
+            "keepalives_interval": 10, "keepalives_count": 5,
+        },
+    ) as pool:
+        yield PostgresSaver(pool, serde=serde)
